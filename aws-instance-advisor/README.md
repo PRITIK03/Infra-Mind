@@ -2,12 +2,16 @@
 
 An AI agent that gathers your workload requirements, reasons about system design, researches live AWS instance data across compute, database, and cache tiers, and recommends the optimal setup — with deployable Terraform files generated automatically.
 
-This repository is a monorepo with two projects:
+This folder is the **backend** of the InfraMind monorepo. The Next.js frontend
+lives alongside it at `../aws-advisor-ui/`. See the [root README](../README.md)
+for full clone-and-run instructions.
 
 ```
-aws-instance-advisor/   ← Python backend (FastAPI + LangGraph agent)
-aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
+aws-instance-advisor/   ← this directory (FastAPI + LangGraph agent)
+aws-advisor-ui/         ← sibling Next.js frontend
 ```
+
+Do not nest or recreate a second frontend under this backend directory.
 
 ---
 
@@ -18,7 +22,7 @@ aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
 3. It reasons about system design — concurrency, resource profile, traffic pattern, scaling strategy.
 4. It researches live EC2, RDS, and ElastiCache instance data.
 5. It returns a full architecture recommendation (compute + database + cache + load balancer) with confidence scores and trade-offs.
-6. Terraform files for the recommended setup are written to `aws-instance-advisor/terraform_output/`.
+6. Terraform files for the recommended setup are written to `terraform_output/`.
 
 ---
 
@@ -78,17 +82,29 @@ Open `.env` and set:
 
 ### 3. Start the backend API
 
-From `aws-instance-advisor/`:
+From the repository workspace root (`D:\! Sciqus Internship\AWS Agent` on
+Windows), run:
+
+```powershell
+Set-Location .\aws-instance-advisor
+& .\.venv\Scripts\Activate.ps1
+python -m uvicorn app.api.main:app --reload --port 8000
+```
+
+⚠️ The ASGI application is `app.api.main:app` — never `app.main:app`.
+`app.main` is the terminal CLI entrypoint; running
+`uvicorn app.main:app` starts a server that silently returns 404 for
+every route (this has caused the "frontend can't reach backend" bug
+more than once).
+
+Alternatively, after activating the environment, run the following while
+already inside `aws-instance-advisor`:
 
 ```bash
 uvicorn app.api.main:app --reload --port 8000
 ```
 
-⚠️ The ASGI application is `app.api.main:app` — never `app.main:app`.
-`app.main` is the terminal CLI entrypoint; running `uvicorn app.main:app`
-starts a server that silently returns 404 for every route.
-
-The API will be available at `http://localhost:8000`. Verify with:
+The API will be available at `http://localhost:8000`. You can verify it with:
 
 ```bash
 curl http://localhost:8000/api/health
@@ -100,17 +116,31 @@ From the repository root:
 
 ```bash
 cd aws-advisor-ui
+
+# Install dependencies
 npm install
+
+# Copy the env template
 cp .env.example .env.local
 ```
 
-`.env.local` only needs:
+`.env.local` only needs one variable:
 
 ```
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 ### 5. Start the frontend
+
+In a second terminal, from the workspace root:
+
+```powershell
+Set-Location .\aws-advisor-ui
+npm install
+npm run dev
+```
+
+Or, if you are already inside `aws-advisor-ui`, run:
 
 ```bash
 npm run dev
@@ -122,50 +152,57 @@ Open `http://localhost:3000` in your browser.
 
 ## CLI mode (no frontend needed)
 
-From `aws-instance-advisor/` with the venv active:
+If you just want the terminal experience:
 
 ```bash
 python -m app.main
 ```
+
+The agent will ask questions interactively and print the full recommendation + write Terraform files to `./terraform_output/`.
 
 ---
 
 ## Running tests
 
 ```bash
-# Backend
-cd aws-instance-advisor
 pytest -v
-
-# Frontend
-cd aws-advisor-ui
-npm test
 ```
 
 ---
 
 ## Docker (backend only)
 
-From `aws-instance-advisor/`:
+From this directory:
 
 ```bash
 docker build -t infra-mind .
 docker run -p 8000:8000 --env-file .env infra-mind
 ```
 
+> The Docker image runs the API server only. For the frontend, run `npm run dev`
+> in `aws-advisor-ui` or deploy it on Vercel with **Root Directory** set to
+> `aws-advisor-ui`.
+
+The recommendation endpoint has a small process-local per-IP rate limit because
+each request consumes LLM and live-data quota. The job store is also intentionally
+process-local for now: jobs are lost on server restart and are not shared across
+workers or instances.
+
 ---
 
-## Deploying to Vercel
+## Project structure
 
-Deploy the backend separately (Render, Railway, Fly, etc.) using
-`aws-instance-advisor/Dockerfile`. Set `CORS_ALLOWED_ORIGIN` to the final
-Vercel frontend origin.
+```
+aws-instance-advisor/
+├── app/                   # FastAPI + LangGraph agent
+├── tests/                 # pytest suite
+├── terraform_output/      # Generated Terraform (git-ignored)
+├── Dockerfile
+├── requirements.txt
+└── .env.example
+```
 
-In Vercel, set **Root Directory** to `aws-advisor-ui` and configure:
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NEXT_PUBLIC_API_URL` | Yes | Public HTTPS URL of the deployed backend API, without a trailing slash. |
+Frontend: `../aws-advisor-ui/` (see root README).
 
 ---
 

@@ -1,24 +1,28 @@
-# Python bytecode and caches
+# ── Root workspace junk (local-only) ─────────────────────────
+.kilo/
+.pytest_cache/
+ArchitectureforAWS.png
+AWS System Design.pdf
+aws-instance-advisor V1.zip
+result_dump.json
+*.zip
+
+# ── Secrets — never commit real values ───────────────────────
+.env
+.env.*
+!.env.example
+!.env*.example
+
+# ── Python ───────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyd
 *.pyo
 .Python
-
-# Virtual environments
 venv/
 .venv/
 env/
 ENV/
-
-# Package / build artifacts
-build/
-dist/
-*.egg-info/
-.eggs/
-.vercel/
-
-# Test and type-check caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -27,20 +31,31 @@ dist/
 htmlcov/
 *.db
 
-# IDE and editor settings
+# ── Node / Next.js ───────────────────────────────────────────
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+.vercel/
+
+# ── Generated / local runtime artifacts ──────────────────────
+terraform_output/
+*.log
+backend-stderr.log
+backend-stdout.log
+results-*.png
+results-screenshots/
+audit-*.png
+shots/
+shots-final.log
+
+# ── IDE / OS ─────────────────────────────────────────────────
 .vscode/
 .idea/
-
-# Environment and secrets
-.env
-.env.*
-!.env.example
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# Next.js UI (aws-advisor-ui)
-aws-advisor-ui/node_modules/
-aws-advisor-ui/.next/
-aws-advisor-ui/.env*.local
+*.pem
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -114,6 +114,7 @@ class JobStore:
 
 STAGE_LABELS: dict[str, str] = {
     "collect_requirements": "Collecting requirements",
+    "analyze_repository": "Analyzing repository",
     "validate_requirements": "Validating requirements",
     "reason_system_design": "Reasoning about system design",
     "research_instances": "Researching compute options",

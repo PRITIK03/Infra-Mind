@@ -1,0 +1,22 @@
+INFO:     127.0.0.1:62010 - "GET /api/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51503 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62548 - "OPTIONS /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57542 - "OPTIONS /api/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62858 - "OPTIONS /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63389 - "OPTIONS /api/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62548 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62858 - "GET /api/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62548 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62548 - "GET /api/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52742 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49524 - "OPTIONS /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57023 - "OPTIONS /api/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61929 - "OPTIONS /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59322 - "OPTIONS /api/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49524 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59322 - "GET /api/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49524 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52911 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49924 - "POST /query HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49930 - "POST /query HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:60748 - "POST /query HTTP/1.1" 404 Not Found

@@ -90,8 +90,11 @@ Set-Location .\aws-instance-advisor
 python -m uvicorn app.api.main:app --reload --port 8000
 ```
 
-Do not run `uvicorn main:app` from the workspace root: there is no root
-`main.py`; the ASGI application is `app.api.main:app`.
+⚠️ The ASGI application is `app.api.main:app` — never `app.main:app`.
+`app.main` is the terminal CLI entrypoint; running
+`uvicorn app.main:app` starts a server that silently returns 404 for
+every route (this has caused the "frontend can't reach backend" bug
+more than once).
 
 Alternatively, after activating the environment, run the following while
 already inside `aws-instance-advisor`:

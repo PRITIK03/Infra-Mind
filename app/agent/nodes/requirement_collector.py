@@ -9,6 +9,8 @@ blank extraction.
 
 from __future__ import annotations
 
+import re
+
 from app.agent.state import AgentState
 from app.llm.structured import StructuredOutputError, invoke_structured
 from app.models.schemas import UserRequirements, WorkloadType
@@ -16,6 +18,28 @@ from app.models.schemas import UserRequirements, WorkloadType
 
 class RequirementExtractionError(RuntimeError):
     """Raised when the LLM fails to extract structured requirements."""
+
+
+# GitHub URLs are detected with a regex rather than by the LLM: a URL match
+# is unambiguous, and repo analysis must never depend on the model
+# remembering to echo a URL back.  This runs alongside the LLM extraction
+# and takes precedence over any model-guessed value.
+_REPO_URL_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
+    re.IGNORECASE,
+)
+
+
+def detect_repo_url(message: str) -> str | None:
+    """Return the first GitHub repository URL found in *message*, if any."""
+    match = _REPO_URL_RE.search(message or "")
+    if not match:
+        return None
+    # Trailing sentence punctuation is not part of the URL.
+    url = match.group(0).rstrip(".").rstrip("/")
+    if url.lower().endswith(".git"):
+        url = url[: -len(".git")]
+    return url
 
 
 def _should_merge_field(current_value: object, extracted_value: object, default_value: object) -> bool:
@@ -80,6 +104,12 @@ def collect_requirements(state: AgentState) -> AgentState:
     for field, value in extracted.model_dump().items():
         if _should_merge_field(merged.get(field), value, defaults[field].default):
             merged[field] = value
+
+    # Deterministic override: a detected URL always wins over a model-guessed
+    # one (or fills the field the model omitted).
+    detected_repo_url = detect_repo_url(message)
+    if detected_repo_url:
+        merged["repo_url"] = detected_repo_url
 
     state["requirements"] = UserRequirements(**merged)
     state["latest_user_message"] = None

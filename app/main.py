@@ -1,6 +1,13 @@
 """
 CLI entrypoint for the AWS Instance Advisor agent.
 
+⚠️  This is the TERMINAL/CLI entrypoint only — it is NOT the API server.
+    Do NOT run `uvicorn app.main:app`: it will start a server that returns
+    404 for every route. The HTTP API lives in app/api/main.py and must be
+    started as:
+
+        uvicorn app.api.main:app --port 8000
+
 Collects requirements turn by turn (asking follow-up questions where
 needed), then reasons about system design, researches live EC2
 candidates, prints a final recommendation, and writes deployable
@@ -30,6 +37,8 @@ def main() -> None:
         "latest_user_message": None,
         "next_question": None,
         "pending_field": None,
+        "repo_analysis": None,
+        "repo_analysis_note": None,
         "technical_needs": None,
         "instance_candidates": None,
         "database_candidates": None,

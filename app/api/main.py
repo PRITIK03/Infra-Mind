@@ -170,6 +170,8 @@ def _empty_state() -> AgentState:
         "latest_user_message": None,
         "next_question": None,
         "pending_field": None,
+        "repo_analysis": None,
+        "repo_analysis_note": None,
         "technical_needs": None,
         "instance_candidates": None,
         "database_candidates": None,

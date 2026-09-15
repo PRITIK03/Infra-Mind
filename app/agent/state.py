@@ -11,6 +11,7 @@ from app.models.schemas import (
     DatabaseCandidate,
     InstanceCandidate,
     InstanceRecommendation,
+    RepoAnalysis,
     SystemDesignRecommendation,
     TechnicalNeeds,
     UserRequirements,
@@ -22,6 +23,8 @@ class AgentState(TypedDict):
     latest_user_message: str | None
     next_question: str | None
     pending_field: str | None
+    repo_analysis: RepoAnalysis | None
+    repo_analysis_note: str | None
     technical_needs: TechnicalNeeds | None
     instance_candidates: list[InstanceCandidate] | None
     database_candidates: list[DatabaseCandidate] | None

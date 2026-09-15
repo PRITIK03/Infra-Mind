@@ -267,6 +267,9 @@ def grounding_check(state: AgentState) -> AgentState:
         return state
 
     repaired = _apply_post_processing(repaired, state)
+    repaired = repaired.model_copy(
+        update={"repo_analysis_note": sdr.repo_analysis_note}
+    )
 
     # ── Second grounding check on the repair ──────────────────────────────
     second_result = _run_grounding_check(repaired, tn)

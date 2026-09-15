@@ -14,6 +14,7 @@ from app.agent.nodes.grounding_check import grounding_check
 from app.agent.nodes.holistic_recommender import holistic_recommend
 from app.agent.nodes.instance_researcher import research_instances
 from app.agent.nodes.recommender import recommend_instance
+from app.agent.nodes.repo_analyzer import analyze_repository
 from app.agent.nodes.requirement_collector import collect_requirements
 from app.agent.nodes.requirement_validator import validate_requirements
 from app.agent.nodes.system_design_reasoner import reason_system_design
@@ -29,6 +30,7 @@ def build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("collect_requirements", collect_requirements)
+    graph.add_node("analyze_repository", analyze_repository)
     graph.add_node("validate_requirements", validate_requirements)
     graph.add_node("reason_system_design", reason_system_design)
     graph.add_node("research_instances", research_instances)
@@ -39,7 +41,8 @@ def build_graph():
     graph.add_node("generate_terraform", generate_terraform)
 
     graph.set_entry_point("collect_requirements")
-    graph.add_edge("collect_requirements", "validate_requirements")
+    graph.add_edge("collect_requirements", "analyze_repository")
+    graph.add_edge("analyze_repository", "validate_requirements")
 
     graph.add_conditional_edges(
         "validate_requirements",

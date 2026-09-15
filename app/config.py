@@ -108,6 +108,40 @@ def get_tavily_settings() -> TavilySettings:
 
 
 @dataclass(frozen=True)
+class GitHubMCPSettings:
+    """
+    Config for the GitHub MCP server used by optional repository analysis.
+
+    token is None when GITHUB_MCP_TOKEN is unset.  Repository analysis is an
+    enhancement, not a requirement — callers skip gracefully, exactly like
+    the Tavily pattern above.
+    """
+
+    token: str | None = None
+    base_url: str = "https://api.githubcopilot.com/mcp/"
+
+
+def get_github_mcp_settings() -> GitHubMCPSettings:
+    """Load GitHub MCP settings without failing when they're absent.
+
+    When GITHUB_MCP_TOKEN is unset this returns an unconfigured instance so
+    the pipeline runs without repository context rather than erroring —
+    matching the Tavily/observability graceful-skip pattern.
+    """
+    token = (os.getenv("GITHUB_MCP_TOKEN") or "").strip() or None
+    if token is None:
+        logger.debug(
+            "GITHUB_MCP_TOKEN is unset; repository analysis disabled. "
+            "Runs will proceed without repo context."
+        )
+    base_url = (
+        (os.getenv("GITHUB_MCP_BASE_URL") or "").strip()
+        or "https://api.githubcopilot.com/mcp/"
+    )
+    return GitHubMCPSettings(token=token, base_url=base_url)
+
+
+@dataclass(frozen=True)
 class ObservabilitySettings:
     """
     Optional observability config.

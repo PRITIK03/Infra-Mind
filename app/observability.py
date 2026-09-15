@@ -36,6 +36,28 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _iso_timestamp(value: Any) -> str:
+    """
+    Normalize a DB timestamp to ISO 8601 with an explicit UTC marker.
+
+    Handles every storage variant the table has produced:
+      - "2026-09-11 20:10:11"       (legacy SQLite datetime('now'))
+      - "2026-09-11 20:10:11+00:00" (Postgres TIMESTAMP WITH TIME ZONE)
+      - "2026-09-11T20:10:11Z"      (new SQLite strftime default)
+
+    The output is always "YYYY-MM-DDTHH:MM:SSZ" (or preserves an explicit
+    offset), which `new Date(...)` parses natively in every browser —
+    no frontend workarounds required.
+    """
+    text = str(value).strip().replace(" ", "T", 1)
+    if text.endswith("Z"):
+        return text
+    # Already carries an explicit UTC offset (e.g. "+00:00") — keep it.
+    if len(text) > 10 and (text[-6] in "+-" and text[-3] == ":"):
+        return text
+    return text + "Z"
+
 # ---------------------------------------------------------------------------
 # Lazy engine — built once on first call, None when unconfigured.
 # We import SQLAlchemy lazily so the whole app still starts without it.
@@ -101,11 +123,13 @@ CREATE TABLE IF NOT EXISTS run_history (
 )
 """
 
-# SQLite-compatible variant (no timezone cast, no AT TIME ZONE)
+# SQLite-compatible variant (no timezone cast, no AT TIME ZONE).
+# Default stores ISO 8601 with T separator + Z suffix so the value is
+# directly parseable by JavaScript Date in every browser.
 _TABLE_DDL_SQLITE = """
 CREATE TABLE IF NOT EXISTS run_history (
     job_id               TEXT        PRIMARY KEY,
-    timestamp            TEXT        NOT NULL DEFAULT (datetime('now')),
+    timestamp            TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     total_latency_s      FLOAT,
     model_used           TEXT,
     retry_count          INTEGER     NOT NULL DEFAULT 0,
@@ -254,7 +278,7 @@ def get_runs(*, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         runs = [
             {
                 "job_id": r[0],
-                "timestamp": str(r[1]),
+                "timestamp": _iso_timestamp(r[1]),
                 "total_latency_s": r[2],
                 "model_used": r[3],
                 "retry_count": r[4],

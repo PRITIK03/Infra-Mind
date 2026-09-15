@@ -522,7 +522,8 @@ def recommend_system_design(state: AgentState) -> AgentState:
         update={
             "estimated_cost": _compute_estimated_cost(
                 result, needs, compute_candidates, db_candidates, cache_candidates
-            )
+            ),
+            "repo_analysis_note": state.get("repo_analysis_note"),
         }
     )
 

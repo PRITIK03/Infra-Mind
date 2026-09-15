@@ -96,6 +96,14 @@ class UserRequirements(BaseModel):
         default=None,
         description="Any other free-text context provided by the user.",
     )
+    repo_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "GitHub repository URL, when the user included one in their message. "
+            "Detected deterministically (regex), never inferred by the model. "
+            "Fully optional — it enables repo analysis, it is never blocking."
+        ),
+    )
 
     def missing_critical_fields(self) -> list[str]:
         """
@@ -114,6 +122,38 @@ class UserRequirements(BaseModel):
         if self.traffic_pattern == TrafficPattern.UNKNOWN:
             critical.append("traffic_pattern")
         return critical
+
+
+class RepoAnalysis(BaseModel):
+    """
+    Lightweight, deterministic summary of a user-supplied GitHub repository.
+
+    Produced by repo_analyzer from the repository's root listing plus a few
+    manifest files.  This is deliberately a shallow signal — detected
+    language/framework, containerization, and notable dependencies — not a
+    full dependency graph or build analysis.  It informs the system design
+    reasoner but must never override explicitly user-stated requirements.
+    """
+
+    detected_language: Optional[str] = Field(
+        default=None,
+        description="Primary language/framework inferred from manifest files, e.g. 'Python', 'JavaScript/Node.js'.",
+    )
+    has_dockerfile: bool = Field(
+        default=False,
+        description="True when the repository root contains a Dockerfile.",
+    )
+    notable_dependencies: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Dependencies worth reasoning about — especially local ML/embedding "
+            "libraries such as 'sentence-transformers', 'transformers', 'torch'."
+        ),
+    )
+    analysis_note: str = Field(
+        ...,
+        description="Short human-readable summary of what the repository indicates about the workload.",
+    )
 
 
 class TechnicalNeeds(BaseModel):
@@ -382,6 +422,13 @@ class SystemDesignRecommendation(BaseModel):
         description=(
             "Short summary of how the pieces work together — e.g. how the cache "
             "reduces database load, why this instance count."
+        ),
+    )
+    repo_analysis_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Informational note when repository analysis was requested but "
+            "unavailable; the recommendation still uses stated requirements."
         ),
     )
     estimated_cost: Optional[EstimatedCost] = Field(

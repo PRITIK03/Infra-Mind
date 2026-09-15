@@ -11,3 +11,4 @@ instances-api-client
 fastapi
 uvicorn
 sqlalchemy
+mcp>=2.2.0

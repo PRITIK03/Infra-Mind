@@ -28,7 +28,7 @@ aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
 |------|----------------|
 | Python | 3.11 |
 | Node.js | 18 |
-| npm | 9 |
+| npm | 10 |
 
 ---
 
@@ -70,9 +70,13 @@ Open `.env` and set:
 | `MODEL_NAME` | Yes | Model slug e.g. `anthropic/claude-3.5-sonnet` |
 | `VANTAGE_API_KEY` | Yes | [Vantage](https://www.vantage.sh/) API key for live EC2 pricing data |
 | `TAVILY_API_KEY` | No | Enables a web-search round during reasoning. Agent works without it. |
+| `LLM_MAX_TOKENS` | No | Overall response token budget (default `8192`) |
+| `LLM_REASONING_MAX_TOKENS` | No | Subset of `LLM_MAX_TOKENS` reserved for the model's internal reasoning; mapped onto OpenRouter `reasoning.effort` (default `2048`) |
+| `LLM_FALLBACK_MODELS` | No | Optional comma-separated list of OpenRouter model slugs to try server-side when `MODEL_NAME` is rate-limited or unavailable. Additive to `API_KEY_2` failover. |
 | `API_KEY_2` | No | Second OpenRouter key for automatic rate-limit failover |
 | `CORS_ALLOWED_ORIGIN` | Yes | Explicit frontend origin; use `http://localhost:3000` locally and the real Vercel domain in production |
 | `PORT` | No | FastAPI port (default `8000`) |
+| `DATABASE_URL` | No | Optional SQLite/Postgres URL enabling run-history persistence via `GET /api/runs`. Without it, jobs are process-local and lost on restart. |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
 
@@ -139,7 +143,7 @@ pytest -v
 
 # Frontend
 cd aws-advisor-ui
-npm test
+npm test            # runs Vitest
 ```
 
 ---
@@ -169,6 +173,32 @@ In Vercel, set **Root Directory** to `aws-advisor-ui` and configure:
 
 ---
 
+## Project structure
+
+```
+.
+├── aws-instance-advisor/      # Python backend (FastAPI + LangGraph agent)
+│   ├── app/                   # FastAPI + LangGraph agent
+│   ├── tests/                 # pytest suite
+│   ├── terraform_output/      # Generated Terraform (git-ignored)
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── .env.example
+│
+├── aws-advisor-ui/            # Next.js frontend (chat UI + results dashboard)
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── .env.example
+│
+├── result_dump.json           # Saved agent result for screenshot / regression testing
+└── README.md                  # this file
+```
+
+Backend details: see [aws-instance-advisor/README.md](aws-instance-advisor/README.md).
+
+---
+
 ## API reference
 
 | Method | Endpoint | Description |
@@ -177,5 +207,7 @@ In Vercel, set **Root Directory** to `aws-advisor-ui` and configure:
 | `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
 | `POST` | `/api/recommend/{job_id}/answer` | Reply to a follow-up question `{ "answer": "..." }` |
+| `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) for landing page readouts |
+| `GET` | `/api/runs` | Paginated run-history list; query params `?page=1&page_size=20` |
 
 Job status values: `collecting` → `running` → `awaiting_input` → `done` / `error`

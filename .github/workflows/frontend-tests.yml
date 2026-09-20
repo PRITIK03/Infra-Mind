@@ -22,19 +22,28 @@ jobs:
 
       - name: Install dependencies
         working-directory: aws-advisor-ui
-        # `npm ci` installs strictly from package-lock.json and — unlike a
-        # plain `npm install` against a pre-existing node_modules — reliably
-        # installs platform-specific optional dependencies. Without
-        # `--include=optional`, npm's known optional-dependency bug
-        # (npm/cli#4828) can omit @rolldown/binding-linux-x64-gnu, which
-        # makes vitest fail at startup with "Cannot find native binding".
+        # `npm ci` installs strictly from package-lock.json. `--include=optional`
+        # is required because npm would otherwise drop platform-specific
+        # optional dependencies (npm/cli#4828).
         run: npm ci --include=optional
 
-      - name: Verify native binding is present
+      - name: Ensure rolldown native binding
         working-directory: aws-advisor-ui
+        # Belt-and-braces for npm/cli#4828: even with --include=optional the
+        # linux binding can be skipped, which makes vitest 5 (rolldown-based)
+        # exit immediately with "Cannot find native binding". Install exactly
+        # the version matching the resolved rolldown package.
         run: |
-          node -e "require.resolve('@rolldown/binding-linux-x64-gnu')" \
-            || echo "::warning::@rolldown/binding-linux-x64-gnu missing — vitest may fail to start"
+          set -euo pipefail
+          ROLLDOWN_VERSION=$(node -p "require('rolldown/package.json').version")
+          echo "rolldown $ROLLDOWN_VERSION detected"
+          if node -e "require.resolve('@rolldown/binding-linux-x64-gnu')" 2>/dev/null; then
+            echo "binding already present"
+          else
+            echo "installing @rolldown/binding-linux-x64-gnu@$ROLLDOWN_VERSION"
+            npm install --no-save "@rolldown/binding-linux-x64-gnu@$ROLLDOWN_VERSION"
+          fi
+          node -e "require.resolve('@rolldown/binding-linux-x64-gnu')"
 
       - name: Run Vitest suite
         working-directory: aws-advisor-ui

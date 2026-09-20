@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import os
 import threading
 import time
@@ -56,6 +57,8 @@ from app.api.job_store import Job, JobStatus, JobStoreBackend, build_job_store
 from app.api.jobs import label_for_node
 from app.config import get_api_settings
 from app.models.schemas import SystemDesignRecommendation, UserRequirements
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Concurrency + timeout constants (overridable via env for larger hosts)
@@ -98,6 +101,104 @@ class AnswerRequest(BaseModel):
             raise ValueError("answer must contain non-whitespace text")
         return value
 
+
+# ---------------------------------------------------------------------------
+# Optional error monitoring (Sentry) — never required, never blocking.
+#
+# Initialized BEFORE the FastAPI app is constructed: Sentry's FastAPI /
+# Starlette integration patches the framework at init time, so initializing
+# after `FastAPI(...)` exists can miss the instrumentation. When SENTRY_DSN
+# is unset (or sentry-sdk isn't installed) this is a no-op and the app runs
+# exactly as it did before.
+# ---------------------------------------------------------------------------
+
+_sentry_enabled: bool = False
+
+
+def init_sentry(dsn: str | None = None, *, traces_sample_rate: float | None = None) -> bool:
+    """Initialize Sentry error monitoring if a DSN is configured.
+
+    Returns True when Sentry was initialized, False when it was skipped.
+    Skipping is the normal case (no SENTRY_DSN configured) and is never an
+    error — matching the Tavily / GitHub-MCP / DATABASE_URL / REDIS_URL
+    graceful-optional pattern.
+
+    The import is deferred so a deployment without sentry-sdk installed
+    still starts up cleanly.
+    """
+    global _sentry_enabled
+
+    from app.config import get_sentry_settings
+
+    settings = get_sentry_settings()
+    if dsn is None:
+        dsn = settings.sentry_dsn
+    if not dsn:
+        # No DSN configured — leave Sentry disabled.
+        _sentry_enabled = False
+        return False
+
+    if traces_sample_rate is None:
+        traces_sample_rate = settings.traces_sample_rate
+
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+        sentry_sdk.init(
+            dsn=dsn,
+            integrations=[FastApiIntegration()],
+            # Error monitoring only by default; tracing is opt-in via
+            # SENTRY_TRACES_SAMPLE_RATE to avoid burning free-tier quota.
+            traces_sample_rate=traces_sample_rate,
+            send_default_pii=False,
+        )
+        _sentry_enabled = True
+        logger.info("Error monitoring: Sentry initialized")
+        return True
+    except Exception as exc:  # pragma: no cover - depends on local env
+        _sentry_enabled = False
+        logger.warning(
+            "SENTRY_DSN is configured but Sentry could not be initialized (%s); "
+            "continuing without error monitoring.",
+            exc,
+        )
+        return False
+
+
+def _capture_exception(exc: BaseException) -> None:
+    """Report an already-handled exception to Sentry, if it's enabled.
+
+    Used for errors this module catches deliberately (graph failures, job
+    timeouts) — those never propagate to FastAPI, so the automatic
+    integration cannot see them. No-ops when Sentry is unconfigured.
+    """
+    if not _sentry_enabled:
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.capture_exception(exc)
+    except Exception:  # pragma: no cover - observability must never crash
+        pass
+
+
+def _capture_message(message: str) -> None:
+    """Report a non-exception job failure (e.g. wall-clock timeout) to Sentry.
+
+    No-ops when Sentry is unconfigured, same as _capture_exception.
+    """
+    if not _sentry_enabled:
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.capture_message(message, level="error")
+    except Exception:  # pragma: no cover - observability must never crash
+        pass
+
+
+init_sentry()
 
 api_settings = get_api_settings()
 
@@ -274,6 +375,7 @@ def _graph_loop_sync(job_id: str, initial_state: AgentState) -> None:
 
     except Exception as exc:
         jobs.update_status(job_id, "error", error=f"{type(exc).__name__}: {exc}")
+        _capture_exception(exc)
 
 
 def _resume_with_answer_sync(job_id: str, answer: str) -> None:
@@ -315,6 +417,7 @@ def _resume_with_answer_sync(job_id: str, answer: str) -> None:
 
     except Exception as exc:
         jobs.update_status(job_id, "error", error=f"{type(exc).__name__}: {exc}")
+        _capture_exception(exc)
 
 
 def _submit_with_timeout(fn, *args) -> None:
@@ -337,14 +440,14 @@ def _submit_with_timeout(fn, *args) -> None:
         try:
             future.result(timeout=JOB_TIMEOUT_SECONDS)
         except concurrent.futures.TimeoutError:
-            jobs.update_status(
-                job_id,
-                "error",
-                error=(
-                    f"Job timed out after {JOB_TIMEOUT_SECONDS:.0f}s — "
-                    "the agent took too long to respond. Please try again."
-                ),
+            timeout_message = (
+                f"Job timed out after {JOB_TIMEOUT_SECONDS:.0f}s — "
+                "the agent took too long to respond. Please try again."
             )
+            jobs.update_status(job_id, "error", error=timeout_message)
+            # Job timeouts are swallowed here (the job is marked errored, no
+            # exception propagates to FastAPI), so report explicitly.
+            _capture_message(f"Job {job_id} timed out: {timeout_message}")
         except Exception:
             # The underlying fn already wrote its own error via jobs.update_status;
             # nothing to do here — exceptions from the future are already handled

@@ -14,3 +14,6 @@ sqlalchemy
 mcp>=2.2.0
 redis>=5.0
 fakeredis>=2.20
+# Optional error monitoring (SENTRY_DSN). FastAPI integration is enabled
+# automatically because fastapi is already a dependency.
+sentry-sdk>=2.0

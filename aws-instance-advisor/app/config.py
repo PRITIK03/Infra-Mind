@@ -201,6 +201,46 @@ def get_redis_settings() -> RedisSettings:
 
 
 @dataclass(frozen=True)
+class SentrySettings:
+    """
+    Optional error-monitoring config.
+
+    sentry_dsn: Sentry Data Source Name for error reporting (e.g.
+    ``https://<key>@o0.ingest.sentry.io/0``).  When None, Sentry is never
+    initialized and the app behaves exactly as it did before — the same
+    graceful-optional pattern used for Tavily, GitHub MCP, DATABASE_URL,
+    and REDIS_URL.  Error monitoring is an upgrade, never a requirement.
+
+    traces_sample_rate: fraction of requests traced for performance
+    monitoring.  Deliberately 0.0 by default — this project only needs
+    error monitoring, and tracing on a free tier burns quota fast.
+    """
+
+    sentry_dsn: str | None = None
+    traces_sample_rate: float = 0.0
+
+
+def get_sentry_settings() -> SentrySettings:
+    """Load Sentry settings without failing when they're absent.
+
+    When SENTRY_DSN is unset this returns an unconfigured instance so the
+    caller skips Sentry initialization entirely rather than erroring —
+    matching the Tavily/GitHub-MCP/DATABASE_URL/REDIS_URL graceful-skip
+    pattern.
+    """
+    raw = (os.getenv("SENTRY_DSN") or "").strip() or None
+    if raw is None:
+        logger.debug(
+            "SENTRY_DSN is unset; error monitoring disabled. "
+            "Unhandled API errors will only appear in server logs."
+        )
+    return SentrySettings(
+        sentry_dsn=raw,
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0") or 0.0),
+    )
+
+
+@dataclass(frozen=True)
 class APISettings:
     """Config for the FastAPI HTTP layer exposing the agent."""
 

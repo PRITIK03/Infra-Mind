@@ -22,7 +22,19 @@ jobs:
 
       - name: Install dependencies
         working-directory: aws-advisor-ui
-        run: npm install
+        # `npm ci` installs strictly from package-lock.json and — unlike a
+        # plain `npm install` against a pre-existing node_modules — reliably
+        # installs platform-specific optional dependencies. Without
+        # `--include=optional`, npm's known optional-dependency bug
+        # (npm/cli#4828) can omit @rolldown/binding-linux-x64-gnu, which
+        # makes vitest fail at startup with "Cannot find native binding".
+        run: npm ci --include=optional
+
+      - name: Verify native binding is present
+        working-directory: aws-advisor-ui
+        run: |
+          node -e "require.resolve('@rolldown/binding-linux-x64-gnu')" \
+            || echo "::warning::@rolldown/binding-linux-x64-gnu missing — vitest may fail to start"
 
       - name: Run Vitest suite
         working-directory: aws-advisor-ui

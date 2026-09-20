@@ -2,7 +2,9 @@ name: Frontend Tests
 
 on:
   push:
-    branches: [main, V2, "feature/**", "feat/**"]
+    branches: [main, V2]
+  # pull_request.branches filters the BASE branch, so this covers PRs opened
+  # from any feature branch into main/V2 without running on every feature push.
   pull_request:
     branches: [main, V2]
 
@@ -20,30 +22,53 @@ jobs:
           cache: npm
           cache-dependency-path: aws-advisor-ui/package-lock.json
 
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: aws-advisor-ui/node_modules
+          # Keyed on the lockfile hash, so it is reused until dependencies
+          # change. Bump the -v1 suffix to invalidate manually if a cache
+          # ever ends up in a bad state.
+          key: ${{ runner.os }}-node-modules-v1-${{ hashFiles('aws-advisor-ui/package-lock.json') }}
+
       - name: Install dependencies
+        # `npm ci` wipes node_modules, so skip it entirely on a cache hit.
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         working-directory: aws-advisor-ui
-        # `npm ci` installs strictly from package-lock.json. `--include=optional`
-        # is required because npm would otherwise drop platform-specific
-        # optional dependencies (npm/cli#4828).
         run: npm ci --include=optional
 
-      - name: Ensure rolldown native binding
+      - name: Ensure rolldown native binding (pinned to package-lock.json)
         working-directory: aws-advisor-ui
-        # Belt-and-braces for npm/cli#4828: even with --include=optional the
-        # linux binding can be skipped, which makes vitest 5 (rolldown-based)
-        # exit immediately with "Cannot find native binding". Install exactly
-        # the version matching the resolved rolldown package.
+        # Root cause of the earlier instant vitest failures: package-lock.json
+        # has NO packages entry for any @rolldown/binding-* package — the 15
+        # names only appear inside rolldown's optionalDependencies map. With
+        # nothing in the lockfile to install, npm omits the platform binding
+        # (npm/cli#4828) and vitest exits immediately with "Cannot find native
+        # binding" before running a single test. `--include=optional` cannot
+        # help because there is no lockfile entry to include.
+        #
+        # So install the exact version this lockfile already pins. rolldown
+        # and its platform bindings are released in lockstep, so the locked
+        # rolldown version IS the binding version — no semver range, no
+        # "latest", nothing resolved from the registry.
         run: |
           set -euo pipefail
-          ROLLDOWN_VERSION=$(node -p "require('rolldown/package.json').version")
-          echo "rolldown $ROLLDOWN_VERSION detected"
+          LOCKED=$(node -p "require('./package-lock.json').packages['node_modules/rolldown'].version")
+          INSTALLED=$(node -p "require('rolldown/package.json').version")
+          echo "package-lock.json pins rolldown $LOCKED; node_modules has rolldown $INSTALLED"
+          if [ "$LOCKED" != "$INSTALLED" ]; then
+            echo "::error::rolldown mismatch (locked $LOCKED, installed $INSTALLED): package-lock.json and node_modules disagree"
+            exit 1
+          fi
           if node -e "require.resolve('@rolldown/binding-linux-x64-gnu')" 2>/dev/null; then
             echo "binding already present"
           else
-            echo "installing @rolldown/binding-linux-x64-gnu@$ROLLDOWN_VERSION"
-            npm install --no-save "@rolldown/binding-linux-x64-gnu@$ROLLDOWN_VERSION"
+            echo "installing @rolldown/binding-linux-x64-gnu@$LOCKED (exact, from lockfile)"
+            npm install --no-save --no-audit --no-fund "@rolldown/binding-linux-x64-gnu@$LOCKED"
           fi
-          node -e "require.resolve('@rolldown/binding-linux-x64-gnu')"
+          node -e "require.resolve('@rolldown/binding-linux-x64-gnu')" \
+            && echo "binding resolvable: OK"
 
       - name: Run Vitest suite
         working-directory: aws-advisor-ui

@@ -168,6 +168,39 @@ def get_observability_settings() -> ObservabilitySettings:
 
 
 @dataclass(frozen=True)
+class RedisSettings:
+    """
+    Optional Redis config for the persistent job store.
+
+    redis_url: Redis connection URL (e.g. ``redis://localhost:6379/0`` or a
+    managed ``rediss://`` URL from Upstash/Render/Railway).  When None, the
+    API falls back to the process-local in-memory job store — exactly the
+    same graceful-skip pattern used for Tavily, GitHub MCP, and
+    DATABASE_URL.  Redis is an upgrade (job survival across restarts,
+    shared state across multiple backend instances), never a hard
+    requirement.
+    """
+
+    redis_url: str | None = None
+
+
+def get_redis_settings() -> RedisSettings:
+    """Load Redis settings without failing when they're absent.
+
+    When REDIS_URL is unset this returns an unconfigured instance so the
+    app continues with the in-memory JobStore rather than erroring —
+    matching the Tavily/GitHub-MCP/DATABASE_URL graceful-skip pattern.
+    """
+    raw = (os.getenv("REDIS_URL") or "").strip() or None
+    if raw is None:
+        logger.debug(
+            "REDIS_URL is unset; using the in-memory job store. "
+            "Jobs will not survive restarts or be shared across instances."
+        )
+    return RedisSettings(redis_url=raw)
+
+
+@dataclass(frozen=True)
 class APISettings:
     """Config for the FastAPI HTTP layer exposing the agent."""
 

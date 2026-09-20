@@ -1,5 +1,8 @@
 # InfraMind — AWS Instance Advisor
 
+[![Backend Tests](https://github.com/PRITIK03/Infra-Mind/actions/workflows/backend-tests.yml/badge.svg)](https://github.com/PRITIK03/Infra-Mind/actions/workflows/backend-tests.yml)
+[![Frontend Tests](https://github.com/PRITIK03/Infra-Mind/actions/workflows/frontend-tests.yml/badge.svg)](https://github.com/PRITIK03/Infra-Mind/actions/workflows/frontend-tests.yml)
+
 An AI agent that gathers your workload requirements, reasons about system design, researches live AWS instance data across compute, database, and cache tiers, and recommends the optimal setup — with deployable Terraform files generated automatically.
 
 This repository is a monorepo with two projects:
@@ -79,6 +82,7 @@ Open `.env` and set:
 | `DATABASE_URL` | No | Optional SQLite/Postgres URL enabling run-history persistence via `GET /api/runs`. Without it, jobs are process-local and lost on restart. |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
+| `REDIS_URL` | No | Optional Redis URL enabling a persistent job store (survives restarts, shared across backend instances). Without it, jobs are in-memory only — fine for single-instance dev/demo. Records expire after 24h. |
 
 ### 3. Start the backend API
 

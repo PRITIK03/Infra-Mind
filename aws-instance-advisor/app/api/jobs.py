@@ -1,115 +1,43 @@
 """
-In-memory job store for long-running agent executions.
+Backwards-compatibility shim — job models and store now live in
+``app.api.job_store``.
 
-KNOWN LIMITATION (v1):
-    This store is process-local and in-memory only. It will NOT:
-      - survive a server restart
-      - share state across multiple workers / instances / pods
-      - persist after the Python process exits
-    For horizontal scaling or production durability, replace this with a
-    Redis-backed store (e.g. Redis Hash + Pub/Sub for progress updates)
-    and swap in the same interface. Using a single asyncio.Lock protects
-    against concurrent access within one single-threaded async worker.
+Historical note: this module originally contained the in-memory JobStore
+implementation directly.  That implementation moved to
+``app.api.job_store.InMemoryJobStore`` alongside the Redis-backed
+``RedisJobStore``; this module re-exports the public names so existing
+imports (``from app.api.jobs import Job, JobStore, ...``) keep working
+unchanged across the codebase and test suite.
 """
 
 from __future__ import annotations
 
-import asyncio
-import threading
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from app.api.job_store import (
+    InMemoryJobStore,
+    Job,
+    JobRecord,
+    JobStatus,
+    JobStoreBackend,
+    RedisJobStore,
+    build_job_store,
+)
 
-from app.agent.state import AgentState
+# ``JobStore`` is the historical name for the in-memory store; keep it as
+# an alias so older imports continue to resolve.
+JobStore = InMemoryJobStore
 
-
-JobStatus = Literal[
-    "collecting",
-    "awaiting_input",
-    "running",
-    "done",
-    "error",
+__all__ = [
+    "InMemoryJobStore",
+    "Job",
+    "JobRecord",
+    "JobStatus",
+    "JobStore",
+    "JobStoreBackend",
+    "RedisJobStore",
+    "STAGE_LABELS",
+    "build_job_store",
+    "label_for_node",
 ]
-
-
-@dataclass
-class Job:
-    """Tracks a single agent execution across its full lifecycle."""
-
-    job_id: str
-    status: JobStatus
-    current_stage: str
-    state: AgentState
-    next_question: str | None = None
-    result: dict[str, Any] | None = None
-    error: str | None = None
-    # Set while the LLM layer is retrying after a rate-limit response,
-    # e.g. "Retrying after rate limit (attempt 2 of 4)".  Cleared back
-    # to None when the retry succeeds so the UI can stop showing it.
-    retry_info: str | None = None
-    created_at: float = field(default_factory=lambda: __import__("time").time())
-
-
-class JobStore:
-    """Thread-safe in-memory dict of job_id -> Job."""
-
-    def __init__(self) -> None:
-        self._jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
-
-    def get(self, job_id: str) -> Job | None:
-        with self._lock:
-            return self._jobs.get(job_id)
-
-    def put(self, job: Job) -> None:
-        with self._lock:
-            self._jobs[job.job_id] = job
-
-    def update_stage(self, job_id: str, stage: str) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is not None:
-                job.current_stage = stage
-
-    def update_status(
-        self,
-        job_id: str,
-        status: JobStatus,
-        *,
-        next_question: str | None = None,
-        result: dict[str, Any] | None = None,
-        error: str | None = None,
-    ) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return
-            job.status = status
-            if next_question is not None:
-                job.next_question = next_question
-            if result is not None:
-                job.result = result
-            if error is not None:
-                job.error = error
-
-    def update_state(self, job_id: str, state: AgentState) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is not None:
-                job.state = state
-                if state.get("next_question"):
-                    job.next_question = state["next_question"]
-
-    def update_retry_info(self, job_id: str, retry_info: str | None) -> None:
-        """Set or clear the real-time retry progress message.
-
-        Pass a non-None string while a rate-limit retry is in progress
-        (e.g. "Retrying after rate limit (attempt 2 of 4)").
-        Pass None to clear it once the retry succeeds.
-        """
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is not None:
-                job.retry_info = retry_info
 
 
 STAGE_LABELS: dict[str, str] = {

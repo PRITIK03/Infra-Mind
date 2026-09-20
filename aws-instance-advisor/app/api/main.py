@@ -37,6 +37,7 @@ protecting against any future hang scenario, not just rate-limit loops.
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import os
 import threading
@@ -51,7 +52,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agent.graph import build_graph
 from app.agent.state import AgentState
-from app.api.jobs import Job, JobStore, JobStatus, label_for_node
+from app.api.job_store import Job, JobStatus, JobStoreBackend, build_job_store
+from app.api.jobs import label_for_node
 from app.config import get_api_settings
 from app.models.schemas import SystemDesignRecommendation, UserRequirements
 
@@ -113,7 +115,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-jobs = JobStore()
+jobs: JobStoreBackend = build_job_store()
 
 
 class InMemoryRateLimiter:
@@ -574,22 +576,28 @@ def create_recommend_job(request: Request, req: RecommendRequest) -> dict[str, A
 
 
 @app.get("/api/recommend/{job_id}")
-def get_job_status(job_id: str) -> dict[str, Any]:
-    """Poll the current state / progress / result of a job."""
-    job = jobs.get(job_id)
+async def get_job_status(job_id: str) -> dict[str, Any]:
+    """Poll the current state / progress / result of a job.
+
+    The store read is wrapped in asyncio.to_thread so a Redis round-trip
+    (when the Redis-backed store is configured) never blocks the event
+    loop under concurrent polling — the same discipline already applied
+    to the blocking graph execution.
+    """
+    job = await asyncio.to_thread(jobs.get, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return _job_response(job)
 
 
 @app.post("/api/recommend/{job_id}/answer")
-def answer_question(job_id: str, req: AnswerRequest) -> dict[str, Any]:
+async def answer_question(job_id: str, req: AnswerRequest) -> dict[str, Any]:
     """
     Provide the user's reply to a follow-up question. Only valid when
     the job is in 'awaiting_input' status. Resumes execution in the
     background.
     """
-    job = jobs.get(job_id)
+    job = await asyncio.to_thread(jobs.get, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     if job.status != "awaiting_input":

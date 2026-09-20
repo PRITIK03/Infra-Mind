@@ -1,0 +1,39 @@
+name: Backend Tests
+
+on:
+  push:
+    branches: [main, V2, "feature/**", "feat/**"]
+  pull_request:
+    branches: [main, V2]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: aws-instance-advisor/requirements.txt
+
+      - name: Install dependencies
+        working-directory: aws-instance-advisor
+        run: pip install -r requirements.txt
+
+      - name: Run pytest suite (fully mocked — no real network calls)
+        working-directory: aws-instance-advisor
+        env:
+          # Dummy placeholders so config validation passes; the entire
+          # test suite is mock-based and never makes real network calls.
+          API_KEY: dummy-test-key
+          BASE_URL: https://example.com/v1
+          MODEL_NAME: dummy-model
+          VANTAGE_API_KEY: dummy-vantage-key
+          TAVILY_API_KEY: dummy-tavily-key
+          CORS_ALLOWED_ORIGIN: http://localhost:3000
+          PORT: "8000"
+        run: python -m pytest tests/ -q

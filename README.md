@@ -166,6 +166,8 @@ npm test            # runs Vitest
 
 **GitHub MCP (`GITHUB_MCP_TOKEN`)** — Optional. A GitHub PAT with `repo` scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
 
+**Conversational follow-up (`POST /api/recommend/{job_id}/followup`)** — Once a recommendation job reaches `done`, users can ask natural-language follow-up questions against the completed architecture. The endpoint answers directly from the computed recommendation context and persists Q&A history on the job record (supported across both in-memory and Redis backends). It performs a focused single LLM call and never re-runs requirement gathering, research, or Terraform generation. Questions requiring fresh workload profiling or live AWS data are declined honestly.
+
 **CI/CD (status badges at the top of this file)** — GitHub Actions run `Backend Tests` (pytest) and `Frontend Tests` (Vitest + `next build`) on push to `main`/`V2` and on PRs into those branches. The frontend workflow installs a *pinned* `@rolldown/binding-linux-x64-gnu` (exact version taken from `package-lock.json`) — a workaround for npm's optional-dependency bug `npm/cli#4828`, without which `npm ci` succeeds (exit 0) but the platform binding is silently omitted and vitest exits immediately at startup. Don't remove that step if the frontend tests ever start failing with "Cannot find native binding".
 
 ---
@@ -228,8 +230,10 @@ Backend details: see [aws-instance-advisor/README.md](aws-instance-advisor/READM
 | `GET` | `/api/health` | Liveness probe |
 | `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
-| `POST` | `/api/recommend/{job_id}/answer` | Reply to a follow-up question `{ "answer": "..." }` |
+| `POST` | `/api/recommend/{job_id}/answer` | Reply to an agent clarifying question `{ "answer": "..." }` |
+| `POST` | `/api/recommend/{job_id}/followup` | Ask a follow-up question on a completed recommendation `{ "question": "..." }` |
 | `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) for landing page readouts |
 | `GET` | `/api/runs` | Paginated run-history list; query params `?page=1&page_size=20` |
 
 Job status values: `collecting` → `running` → `awaiting_input` → `done` / `error`
+

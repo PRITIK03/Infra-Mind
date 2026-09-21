@@ -30,6 +30,9 @@ ENV/
 .coverage.*
 htmlcov/
 *.db
+runs.db
+*.sqlite
+*.sqlite3
 
 # ── Node / Next.js ───────────────────────────────────────────
 node_modules/

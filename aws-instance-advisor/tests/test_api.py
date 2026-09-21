@@ -644,3 +644,44 @@ def test_stage_label_mapping_covers_all_v2_nodes():
         label = jobs_module.label_for_node(node)
         assert isinstance(label, str)
         assert len(label) >= 5
+
+
+def test_security_headers_present_on_responses():
+    """Security hardening headers must be present on API responses."""
+    resp = _get("/api/health")
+    assert resp.status_code == 200
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("x-frame-options") == "DENY"
+    assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
+
+
+def test_answer_rate_limit_returns_429_after_max_requests():
+    """Follow-up answer submissions are bounded by the per-IP rate limiter."""
+    dummy_id = "00000000-0000-0000-0000-000000000088"
+    responses = [
+        _post(f"/api/recommend/{dummy_id}/answer", json={"answer": "valid answer"})
+        for _ in range(5)
+    ]
+    blocked = _post(f"/api/recommend/{dummy_id}/answer", json={"answer": "valid answer"})
+
+    # All initial 5 responses were processed (404 since job doesn't exist, but not rate limited)
+    assert all(r.status_code == 404 for r in responses)
+    # The 6th request is blocked by the rate limiter
+    assert blocked.status_code == 429
+    assert blocked.headers["retry-after"].isdigit()
+
+
+def test_unhandled_exception_returns_clean_500_without_leakage():
+    """500 responses must not leak tracebacks or file paths to clients."""
+    @app.get("/api/test-error-500")
+    def _error_route():
+        raise RuntimeError("Secret internal path /var/data/key.pem")
+
+    resp = _get("/api/test-error-500")
+    assert resp.status_code == 500
+    data = resp.json()
+    assert data == {"detail": "Internal server error"}
+    assert "key.pem" not in resp.text
+    assert "RuntimeError" not in resp.text
+    assert "Traceback" not in resp.text
+

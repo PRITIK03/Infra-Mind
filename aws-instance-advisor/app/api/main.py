@@ -49,6 +49,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent.graph import build_graph
@@ -226,6 +227,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    try:
+        response = await call_next(request)
+    except HTTPException as exc:
+        response = JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    except Exception as exc:
+        _capture_exception(exc)
+        logger.exception("Unhandled error processing %s: %s", request.url.path, exc)
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    _capture_exception(exc)
+    logger.exception("Unhandled error processing %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
 
 jobs: JobStoreBackend = build_job_store()
 
@@ -707,12 +748,21 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/recommend/{job_id}/answer")
-async def answer_question(job_id: str, req: AnswerRequest) -> dict[str, Any]:
+async def answer_question(request: Request, job_id: str, req: AnswerRequest) -> dict[str, Any]:
     """
     Provide the user's reply to a follow-up question. Only valid when
     the job is in 'awaiting_input' status. Resumes execution in the
     background.
     """
+    client_id = request.client.host if request.client else "unknown"
+    allowed, retry_after = recommend_rate_limiter.allow(client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many recommendation requests. Please try again shortly.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     job = await asyncio.to_thread(jobs.get, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")

@@ -28,6 +28,9 @@ htmlcov/
 
 # Local runtime DB and generated Terraform
 *.db
+runs.db
+*.sqlite
+*.sqlite3
 terraform_output/
 
 # Local server logs

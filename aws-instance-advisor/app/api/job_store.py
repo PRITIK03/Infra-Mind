@@ -50,6 +50,14 @@ JobStatus = Literal[
 ]
 
 
+class FollowupExchange(BaseModel):
+    """A single user follow-up question and the agent's grounded answer."""
+
+    question: str
+    answer: str
+    timestamp: str
+
+
 @dataclass
 class Job:
     """Tracks a single agent execution across its full lifecycle."""
@@ -66,6 +74,7 @@ class Job:
     # to None when the retry succeeds so the UI can stop showing it.
     retry_info: str | None = None
     created_at: float = field(default_factory=lambda: __import__("time").time())
+    followup_history: list[FollowupExchange] = field(default_factory=list)
 
 
 class JobStoreBackend(Protocol):
@@ -96,6 +105,8 @@ class JobStoreBackend(Protocol):
 
     def update_retry_info(self, job_id: str, retry_info: str | None) -> None: ...
 
+    def add_followup(self, job_id: str, exchange: FollowupExchange) -> None: ...
+
 
 class JobRecord(BaseModel):
     """Serializable projection of :class:`Job` — the API response surface.
@@ -112,6 +123,7 @@ class JobRecord(BaseModel):
     error: str | None = None
     retry_info: str | None = None
     created_at: float
+    followup_history: list[FollowupExchange] = []
 
 
 class InMemoryJobStore:
@@ -170,6 +182,13 @@ class InMemoryJobStore:
             job = self._jobs.get(job_id)
             if job is not None:
                 job.retry_info = retry_info
+
+    def add_followup(self, job_id: str, exchange: FollowupExchange) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job.followup_history.append(exchange)
+
 
 
 
@@ -256,6 +275,7 @@ class RedisJobStore:
             error=record.error,
             retry_info=record.retry_info,
             created_at=record.created_at,
+            followup_history=list(record.followup_history),
         )
 
     @staticmethod
@@ -269,6 +289,7 @@ class RedisJobStore:
             error=job.error,
             retry_info=job.retry_info,
             created_at=job.created_at,
+            followup_history=list(job.followup_history),
         )
 
     def _set_state(self, job_id: str, state: Any) -> None:
@@ -330,6 +351,13 @@ class RedisJobStore:
         if record is None:
             return
         record.retry_info = retry_info
+        self._save_record(record)
+
+    def add_followup(self, job_id: str, exchange: FollowupExchange) -> None:
+        record = self._load_record(job_id)
+        if record is None:
+            return
+        record.followup_history.append(exchange)
         self._save_record(record)
 
 

@@ -114,6 +114,18 @@ class AnswerRequest(BaseModel):
         return value
 
 
+class FollowupRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2_000)
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("question must contain non-whitespace text")
+        return value
+
+
 # ---------------------------------------------------------------------------
 # Optional error monitoring (Sentry) — never required, never blocking.
 #
@@ -649,6 +661,8 @@ def _job_response(job: Job) -> dict[str, Any]:
         resp["result"] = job.result
     if job.status == "error" and job.error is not None:
         resp["error"] = job.error
+    if job.followup_history:
+        resp["followup_history"] = [e.model_dump() for e in job.followup_history]
     return resp
 
 
@@ -775,6 +789,84 @@ async def answer_question(request: Request, job_id: str, req: AnswerRequest) -> 
     _submit_with_timeout(_resume_with_answer_sync, job_id, req.answer)
 
     return {"job_id": job_id, "status": "running"}
+
+
+@app.post("/api/recommend/{job_id}/followup")
+async def ask_followup_question(
+    request: Request,
+    job_id: str,
+    req: FollowupRequest,
+) -> dict[str, Any]:
+    """
+    Ask a conversational follow-up question on an already completed job.
+    Only valid when the job's status is 'done'.
+    """
+    client_id = request.client.host if request.client else "unknown"
+    allowed, retry_after = recommend_rate_limiter.allow(client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many recommendation requests. Please try again shortly.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    job = await asyncio.to_thread(jobs.get, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job.status != "done":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not done (current status: {job.status})",
+        )
+
+    sdr = None
+    technical_needs = None
+    if job.result:
+        sdr = job.result.get("system_design_recommendation")
+        technical_needs = job.result.get("technical_needs")
+    if sdr is None and job.state:
+        sdr = job.state.get("system_design_recommendation")
+        technical_needs = job.state.get("technical_needs")
+
+    if sdr is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Job has no completed system design recommendation to answer questions about.",
+        )
+
+    from datetime import datetime, timezone
+    from app.api.job_store import FollowupExchange
+    from app.llm.followup import answer_followup
+
+    answer = await asyncio.to_thread(
+        answer_followup,
+        sdr,
+        technical_needs,
+        req.question,
+        job.followup_history,
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    exchange = FollowupExchange(
+        question=req.question,
+        answer=answer,
+        timestamp=now_iso,
+    )
+    await asyncio.to_thread(jobs.add_followup, job_id, exchange)
+
+    updated_job = await asyncio.to_thread(jobs.get, job_id)
+    history = (
+        [e.model_dump() for e in updated_job.followup_history]
+        if updated_job
+        else [exchange.model_dump()]
+    )
+
+    return {
+        "job_id": job_id,
+        "answer": answer,
+        "exchange": exchange.model_dump(),
+        "followup_history": history,
+    }
 
 
 @app.get("/api/runs")

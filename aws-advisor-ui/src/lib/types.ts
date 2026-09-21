@@ -67,6 +67,26 @@ export interface SystemDesignRecommendation {
   grounding_passed?: boolean | null;
   /** Array of issue strings from the grounding check; empty when passed */
   grounding_notes?: string[] | null;
+  /**
+   * Deterministic Well-Architected-style findings computed on the backend
+   * from fields already present in the recommendation. Never LLM-generated.
+   */
+  well_architected_review?: WellArchitectedFinding[] | null;
+}
+
+// ─── Well-Architected review (deterministic, no LLM) ──────────────────────
+export type WellArchitectedPillar =
+  | "reliability"
+  | "security"
+  | "cost_optimization"
+  | "performance_efficiency"
+  | "operational_excellence";
+
+export interface WellArchitectedFinding {
+  pillar: WellArchitectedPillar;
+  /** info = worth knowing · warning = check before deploying */
+  severity: "info" | "warning";
+  message: string;
 }
 
 export interface UserRequirements {

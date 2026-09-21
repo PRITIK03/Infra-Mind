@@ -466,6 +466,17 @@ class SystemDesignRecommendation(BaseModel):
             "for Terraform generation and grounding checks."
         ),
     )
+    # Deterministic Well-Architected-style review — computed in plain Python
+    # from fields already present on this recommendation plus TechnicalNeeds.
+    # Never produced by an LLM call.  Empty list when no rule fired.
+    well_architected_review: list["WellArchitectedFinding"] = Field(
+        default_factory=list,
+        description=(
+            "Deterministic Well-Architected-style findings derived only from "
+            "fields already present in the recommendation and technical_needs. "
+            "No LLM call is involved."
+        ),
+    )
 
 
 class ConsensusDisagreement(BaseModel):
@@ -538,5 +549,45 @@ class ConsensusResult(BaseModel):
             "Human-readable note, e.g. why consensus was declined when "
             "requested but no consensus model is configured.  None on the "
             "happy path."
+        ),
+    )
+
+
+class WellArchitectedFinding(BaseModel):
+    """One deterministic Well-Architected-style finding.
+
+    Produced by app.analysis.well_architected.build_well_architected_review,
+    which is a pure rule set over fields already present in
+    SystemDesignRecommendation and TechnicalNeeds.  No LLM call is involved,
+    so every finding is directly traceable to a specific field value and the
+    result is fully reproducible.
+
+    severity is intentionally a two-value scale: "info" for context worth
+    knowing, "warning" for something that warrants attention before applying.
+    """
+
+    pillar: Literal[
+        "reliability",
+        "security",
+        "cost_optimization",
+        "performance_efficiency",
+        "operational_excellence",
+    ] = Field(
+        ...,
+        description="Which Well-Architected pillar this finding belongs to.",
+    )
+    severity: Literal["info", "warning"] = Field(
+        ...,
+        description=(
+            "'info' = worth knowing; 'warning' = warrants attention before "
+            "deploying.  Deliberately only two levels — these are mechanical "
+            "observations, not graded judgments."
+        ),
+    )
+    message: str = Field(
+        ...,
+        description=(
+            "Short, specific statement of the observation, naming the field "
+            "values that triggered it."
         ),
     )

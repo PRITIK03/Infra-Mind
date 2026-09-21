@@ -9,6 +9,7 @@ import { CandidateLandscape } from "./CandidateLandscape";
 import { ScalingRangeBar } from "./ScalingRangeBar";
 import { ConfidenceStrip } from "./ConfidenceStrip";
 import { CopyableValue } from "./CopyableValue";
+import { WellArchitectedReview } from "./WellArchitectedReview";
 
 interface Props {
   sdr: SystemDesignRecommendation;
@@ -361,6 +362,19 @@ export function ResultReport({ sdr, technicalNeeds, instanceCandidates }: Props)
       </section>
 
       <hr className="console-rule" />
+
+      {/* ── Well-Architected review — deterministic findings from the backend ── */}
+      {!!sdr.well_architected_review?.length && (
+        <section
+          className="result-section result-section-delay-2 py-6 scroll-mt-16"
+          id="well-architected"
+        >
+          <SectionHeader label="well-architected review" />
+          <WellArchitectedReview findings={sdr.well_architected_review} />
+        </section>
+      )}
+
+      {!!sdr.well_architected_review?.length && <hr className="console-rule" />}
 
       {/* ── Estimated monthly cost ── */}
       {sdr.estimated_cost && (

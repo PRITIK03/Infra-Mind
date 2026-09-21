@@ -35,6 +35,7 @@ from app.agent.nodes._recommendation_utils import (
     invalid_instance_types,
 )
 from app.agent.state import AgentState
+from app.analysis.well_architected import build_well_architected_review
 from app.llm.structured import StructuredOutputError, invoke_structured
 from app.models.schemas import (
     CacheCandidate,
@@ -537,6 +538,16 @@ def build_system_design_recommendation(
                 result, needs, compute_candidates, db_candidates, cache_candidates
             ),
             "repo_analysis_note": state.get("repo_analysis_note"),
+        }
+    )
+
+    # ── Deterministic Well-Architected-style review ───────────────────────────
+    # Pure post-processing over fields this recommendation now holds plus
+    # technical_needs.  No LLM call, no graph node — just attached data, so it
+    # costs nothing extra and is fully reproducible.
+    result = result.model_copy(
+        update={
+            "well_architected_review": build_well_architected_review(result, needs)
         }
     )
 

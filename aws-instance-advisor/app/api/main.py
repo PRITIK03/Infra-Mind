@@ -80,6 +80,17 @@ JOB_TIMEOUT_SECONDS: float = float(os.getenv("JOB_TIMEOUT_SECONDS", "600"))
 
 class RecommendRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10_000)
+    consensus: bool = Field(
+        default=False,
+        description=(
+            "Opt-in multi-model consensus.  When true, the final holistic "
+            "recommendation is generated once more against a second model "
+            "(CONSENSUS_MODEL, else the first LLM_FALLBACK_MODELS entry) and "
+            "compared deterministically — at the cost of one extra full LLM "
+            "call.  Defaults to False: consensus never runs unless explicitly "
+            "requested."
+        ),
+    )
 
     @field_validator("message")
     @classmethod
@@ -282,6 +293,7 @@ def _empty_state() -> AgentState:
         "recommendation": None,
         "system_design_recommendation": None,
         "terraform_files": None,
+        "consensus_requested": False,
     }
 
 
@@ -665,6 +677,7 @@ def create_recommend_job(request: Request, req: RecommendRequest) -> dict[str, A
     job_id = str(uuid.uuid4())
     state = _empty_state()
     state["latest_user_message"] = req.message
+    state["consensus_requested"] = req.consensus
 
     job = Job(
         job_id=job_id,

@@ -415,7 +415,18 @@ def _build_prompt(
     )
 
 
-def recommend_system_design(state: AgentState) -> AgentState:
+def build_system_design_recommendation(
+    state: AgentState,
+    *,
+    model_override: str | None = None,
+) -> SystemDesignRecommendation:
+    """Run the full holistic recommendation pipeline and return the result.
+
+    This is the complete holistic-recommend step without graph mutation, so
+    consensus mode can reuse the exact same inputs and validations against a
+    second model while leaving the primary recommendation in the graph state
+    untouched.
+    """
     needs: TechnicalNeeds | None = state["technical_needs"]
     requirements = state["requirements"]
     compute_candidates = state.get("instance_candidates") or []
@@ -453,7 +464,7 @@ def recommend_system_design(state: AgentState) -> AgentState:
     # ── LLM call ──────────────────────────────────────────────────────────
     try:
         result: SystemDesignRecommendation = invoke_structured(
-            SystemDesignRecommendation, prompt
+            SystemDesignRecommendation, prompt, model_override=model_override
         )
     except StructuredOutputError as exc:
         raise HolisticRecommendationError(str(exc)) from exc
@@ -474,7 +485,9 @@ def recommend_system_design(state: AgentState) -> AgentState:
             retry_prompt = _cache_correction(retry_prompt, bad_cache, cache_candidates)
 
         try:
-            result = invoke_structured(SystemDesignRecommendation, retry_prompt)
+            result = invoke_structured(
+                SystemDesignRecommendation, retry_prompt, model_override=model_override
+            )
         except StructuredOutputError as exc:
             raise HolisticRecommendationError(str(exc)) from exc
 
@@ -527,7 +540,12 @@ def recommend_system_design(state: AgentState) -> AgentState:
         }
     )
 
-    state["system_design_recommendation"] = result
+    return result
+
+
+def recommend_system_design(state: AgentState) -> AgentState:
+    """LangGraph node: build the primary recommendation and store it in state."""
+    state["system_design_recommendation"] = build_system_design_recommendation(state)
     return state
 
 

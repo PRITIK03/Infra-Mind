@@ -69,7 +69,7 @@ def _patched_invoke(schema: type, prompt: str, mock_return, **kw):
     Call invoke_structured with _call_with_failover fully mocked.
     mock_return is the value the fake LLM call returns.
     """
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         # fn receives a model; we hand it a MagicMock model.
         # But invoke_structured builds json_prompt internally and calls
         # _call_with_failover — the fn closure calls model.invoke(json_prompt).
@@ -90,7 +90,7 @@ def test_cache_miss_then_hit():
 
     call_count = 0
 
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         nonlocal call_count
         call_count += 1
         return result1
@@ -113,7 +113,7 @@ def test_whitespace_normalisation_gives_cache_hit():
     call_count = 0
     result = _DummySchema(value="normalised")
 
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         nonlocal call_count
         call_count += 1
         return result
@@ -137,7 +137,7 @@ def test_different_schema_different_key():
     """Same prompt but different schema → separate cache entries."""
     call_count = 0
 
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         nonlocal call_count
         call_count += 1
         # Return appropriate type per call order.
@@ -161,7 +161,7 @@ def test_expired_entry_triggers_new_llm_call():
     call_count = 0
     result = _DummySchema(value="fresh")
 
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         nonlocal call_count
         call_count += 1
         return result
@@ -172,7 +172,12 @@ def test_expired_entry_triggers_new_llm_call():
     assert call_count == 1
 
     # Manually expire the entry by backdating its expires_at.
-    key = _cache_key("_DummySchema", "expiry test")
+    # The cache key now includes the effective model — resolve it the same
+    # way invoke_structured does so the test stays coupled to the real key.
+    from app.config import get_llm_settings
+
+    model = get_llm_settings().model_name
+    key = _cache_key("_DummySchema", "expiry test", model)
     with structured_mod._cache_lock:
         if key in structured_mod._cache:
             structured_mod._cache[key]["expires_at"] = time.monotonic() - 1.0
@@ -197,7 +202,7 @@ def test_grounding_result_never_cached():
     call_count = 0
     gr = GroundingResult(passed=True, issues=[])
 
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         nonlocal call_count
         call_count += 1
         return gr
@@ -221,7 +226,7 @@ def test_retry_callback_bypasses_cache():
     call_count = 0
     result = _DummySchema(value="bypass")
 
-    def _fake_failover(fn, *, retry_callback=None):
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
         nonlocal call_count
         call_count += 1
         return result
@@ -296,3 +301,35 @@ def test_is_cacheable_true_for_regular_schema():
 
 def test_is_cacheable_false_for_grounding_result():
     assert _is_cacheable(GroundingResult) is False
+
+
+# ---------------------------------------------------------------------------
+# 11. Consensus isolation: same prompt, different model → separate cache entry
+# ---------------------------------------------------------------------------
+
+
+def test_same_prompt_different_model_has_separate_cache_entries():
+    """A model_override call never reads another model's cached result.
+
+    This is the anti-fake-agreement invariant: consensus reuses the exact
+    same prompt as the primary call but must always make its own LLM call.
+    """
+    result_primary = _DummySchema(value="primary")
+    result_secondary = _DummySchema(value="secondary")
+
+    calls: list[str] = []
+
+    def _fake_failover(fn, *, retry_callback=None, model_override=None):
+        calls.append(model_override or "primary")
+        return result_secondary if model_override else result_primary
+
+    with patch("app.llm.structured._call_with_failover", side_effect=_fake_failover):
+        r1 = invoke_structured(_DummySchema, "identical prompt text")
+        r2 = invoke_structured(
+            _DummySchema, "identical prompt text", model_override="other/model"
+        )
+
+    assert r1.value == "primary"
+    assert r2.value == "secondary"  # served fresh, NOT from the primary entry
+    assert calls == ["primary", "other/model"]
+

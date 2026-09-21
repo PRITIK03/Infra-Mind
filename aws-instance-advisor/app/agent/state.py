@@ -32,3 +32,8 @@ class AgentState(TypedDict):
     recommendation: InstanceRecommendation | None
     system_design_recommendation: SystemDesignRecommendation | None
     terraform_files: dict[str, str] | None
+    # Opt-in multi-model consensus flag.  Set from the API's `consensus: true`
+    # request field (default False).  When False the consensus_check graph
+    # node is never even invoked — consensus costs an extra full LLM call,
+    # so it must never run by accident.
+    consensus_requested: bool

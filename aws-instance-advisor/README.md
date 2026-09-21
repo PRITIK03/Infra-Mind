@@ -79,6 +79,9 @@ Open `.env` and set:
 | `PORT` | No | FastAPI port (default `8000`) |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
+| `GITHUB_MCP_TOKEN` | No | Optional GitHub PAT (repo read scope) for repository analysis. Without it, the agent runs unchanged and repo analysis is skipped. |
+
+> **GitHub MCP** (`GITHUB_MCP_TOKEN`) — Optional. A GitHub PAT with `repo` read scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
 
 ### 3. Start the backend API
 

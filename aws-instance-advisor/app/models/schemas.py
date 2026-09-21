@@ -15,7 +15,7 @@ Defines the structured data contracts between graph nodes:
 """
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -455,5 +455,88 @@ class SystemDesignRecommendation(BaseModel):
         description=(
             "Issues found by the grounding check that remain unresolved. "
             "Empty when grounding_passed is True or None."
+        ),
+    )
+    consensus_result: Optional["ConsensusResult"] = Field(
+        default=None,
+        description=(
+            "Result of opt-in multi-model consensus mode.  None when consensus "
+            "was not requested.  Consensus is supplementary insight — the "
+            "recommendation itself is always the primary model's output used "
+            "for Terraform generation and grounding checks."
+        ),
+    )
+
+
+class ConsensusDisagreement(BaseModel):
+    """One tier on which the primary and consensus models disagreed."""
+
+    tier: str = Field(
+        ...,
+        description="Tier name that differed (compute, database, cache, load_balancer).",
+    )
+    primary_choice: str = Field(
+        ..., description="The primary model's choice for this tier."
+    )
+    secondary_choice: str = Field(
+        ..., description="The consensus model's choice for this tier."
+    )
+
+
+class ConsensusResult(BaseModel):
+    """Outcome of opt-in multi-model consensus mode.
+
+    The primary model's SystemDesignRecommendation is re-generated once
+    against a second model using the identical technical_needs/candidates,
+    then compared tier-by-tier DETERMINISTICALLY (plain string comparison
+    of instance_type / engine / load_balancer_type — never a third LLM
+    call to judge similarity).
+
+    Agreement levels are counts over the four tiers (compute, database,
+    cache, load_balancer):
+      - "full":                    0 tiers disagree
+      - "partial":                 1–2 tiers disagree
+      - "significant_disagreement": 3+ tiers disagree
+    """
+
+    enabled: bool = Field(
+        ...,
+        description=(
+            "True when a consensus comparison actually ran.  False when "
+            "consensus was requested but declined (no model configured) — "
+            "see `note` for the human-readable reason."
+        ),
+    )
+    primary_model: str = Field(
+        ..., description="Model slug used for the primary recommendation."
+    )
+    secondary_model: str = Field(
+        ...,
+        description=(
+            "Model slug used for the second opinion.  Empty when consensus "
+            "did not run (enabled=False)."
+        ),
+    )
+    agreement_level: Optional[Literal["full", "partial", "significant_disagreement"]] = Field(
+        default=None,
+        description=(
+            "Deterministic outcome of the tier comparison.  None when consensus "
+            "did not run (enabled=False) since there is nothing to compare."
+        ),
+    )
+    agreements: list[str] = Field(
+        default_factory=list,
+        description="Tier names where both models chose identically.",
+    )
+    disagreements: list[ConsensusDisagreement] = Field(
+        default_factory=list,
+        description="Tiers where the models chose differently.",
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable note, e.g. why consensus was declined when "
+            "requested but no consensus model is configured.  None on the "
+            "happy path."
         ),
     )

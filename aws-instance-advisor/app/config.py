@@ -60,6 +60,32 @@ class LLMSettings:
     # dual-key failover which handles per-account 429s.  Read as a
     # comma-separated string from LLM_FALLBACK_MODELS; defaults to empty.
     fallback_models: tuple[str, ...] = ()
+    # Optional second model used ONLY by opt-in consensus mode
+    # (api request ``{"consensus": true}``).  The consensus node re-runs the
+    # final holistic_recommend step against this model using the exact same
+    # technical_needs/candidates, then compares the two recommendations
+    # deterministically.  Read from CONSENSUS_MODEL.
+    #
+    # Deliberately None by default: consensus costs one extra full LLM call,
+    # so it must never happen unless a caller explicitly asks for it AND a
+    # distinct model is configured.  See effective_consensus_model().
+    consensus_model: str | None = None
+
+    def effective_consensus_model(self) -> str | None:
+        """Resolve the model to use for consensus mode, or None to decline.
+
+        Resolution order:
+          1. ``CONSENSUS_MODEL`` when explicitly set.
+          2. ``LLM_FALLBACK_MODELS[0]`` — already configured as a failover
+             model, so it is a reasonable, zero-extra-config second opinion.
+          3. None → consensus mode declines gracefully with a clear message
+             rather than crashing or silently ignoring the request.
+        """
+        if self.consensus_model:
+            return self.consensus_model
+        if self.fallback_models:
+            return self.fallback_models[0]
+        return None
 
 
 @dataclass(frozen=True)
@@ -90,6 +116,7 @@ def get_llm_settings() -> LLMSettings:
         reasoning_max_tokens=_optional_int("LLM_REASONING_MAX_TOKENS", 2048),
         api_key_secondary=os.getenv("API_KEY_2") or None,
         fallback_models=fallback_models,
+        consensus_model=(os.getenv("CONSENSUS_MODEL") or "").strip() or None,
     )
 
 

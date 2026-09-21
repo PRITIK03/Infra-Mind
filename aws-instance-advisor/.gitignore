@@ -34,6 +34,7 @@ terraform_output/
 *.log
 backend-stderr.log
 backend-stdout.log
+*.pid
 
 # IDE and editor settings
 .vscode/

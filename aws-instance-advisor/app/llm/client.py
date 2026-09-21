@@ -50,8 +50,11 @@ def _reasoning_effort_for_budget(reasoning_max_tokens: int, max_tokens: int) -> 
     return "none"
 
 
-@lru_cache(maxsize=2)
-def get_chat_model(use_secondary: bool = False) -> ChatOpenAI:
+@lru_cache(maxsize=8)
+def get_chat_model(
+    use_secondary: bool = False,
+    model_override: str | None = None,
+) -> ChatOpenAI:
     """
     Returns a cached ChatOpenAI instance.
 
@@ -60,6 +63,12 @@ def get_chat_model(use_secondary: bool = False) -> ChatOpenAI:
     use_secondary:
         When True, build the client with `api_key_secondary`. Raises
         RuntimeError if no secondary key is configured.
+    model_override:
+        When set, build the client against this model slug instead of
+        `settings.model_name`.  Used exclusively by opt-in consensus mode,
+        which needs a *different* model than the primary one.  Caching is
+        keyed on (use_secondary, model_override) so each override gets its
+        own instance.
 
     Notes
     -----
@@ -75,6 +84,12 @@ def get_chat_model(use_secondary: bool = False) -> ChatOpenAI:
     from the dual-key failover (which handles per-account 429s). The
     two are additive: keys handle account quotas, this handles per-model
     congestion.
+
+    ``model_override`` deliberately suppresses that server-side fallback
+    array: rerouting a consensus call back onto the primary model would
+    produce a trivially "agreeing" second opinion, which is worse than no
+    consensus at all. An overridden call either uses the requested model
+    or fails loudly.
     """
     settings = get_llm_settings()
     api_key = settings.api_key
@@ -90,19 +105,22 @@ def get_chat_model(use_secondary: bool = False) -> ChatOpenAI:
         settings.reasoning_max_tokens, settings.max_tokens
     )
 
+    model_name = model_override or settings.model_name
+
     extra: dict[str, Any] = {"reasoning": {"effort": effort}}
 
     # OpenRouter server-side model fallback: if the primary model is
     # rate-limited or unavailable, OpenRouter tries each model in order.
     # Only added when LLM_FALLBACK_MODELS is configured — zero change to
     # request payload when the list is empty (backward compatible).
-    if settings.fallback_models:
+    # Skipped entirely for model_override (see docstring).
+    if settings.fallback_models and not model_override:
         extra["models"] = [settings.model_name, *settings.fallback_models]
 
     return ChatOpenAI(
         api_key=api_key,
         base_url=settings.base_url,
-        model=settings.model_name,
+        model=model_name,
         temperature=0,
         max_tokens=settings.max_tokens,
         # 0 = disabled: we own all retry logic in _call_with_failover.

@@ -79,6 +79,7 @@ def _call_with_failover(
     fn: Callable[[ChatOpenAI], T],
     *,
     retry_callback: Callable[[int, int], None] | None = None,
+    model_override: str | None = None,
 ) -> T:
     """
     Call *fn* with bounded retry and dual-key failover on RateLimitError.
@@ -105,6 +106,9 @@ def _call_with_failover(
         If None, falls back to the thread-local _retry_context value so
         callers don't need to thread the callback manually — it's set
         once per graph pass by api/main.py.
+    model_override:
+        When set, every attempt is built against this model slug instead
+        of the configured primary.  Used only by opt-in consensus mode.
     """
     from app.llm.client import get_chat_model
 
@@ -129,7 +133,12 @@ def _call_with_failover(
                 cb(attempt + 1, MAX_RATE_LIMIT_ATTEMPTS)
             time.sleep(sleep_s)
         try:
-            return fn(get_chat_model(use_secondary=use_secondary))
+            return fn(
+                get_chat_model(
+                    use_secondary=use_secondary,
+                    model_override=model_override,
+                )
+            )
         except RateLimitError as exc:
             last_exc = exc
             continue  # try next attempt

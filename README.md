@@ -85,6 +85,7 @@ Open `.env` and set:
 | `REDIS_URL` | No | Optional Redis URL enabling a persistent job store (survives restarts, shared across backend instances). Without it, jobs are in-memory only — fine for single-instance dev/demo. Records expire after 24h. |
 | `SENTRY_DSN` | No | Optional Sentry Data Source Name for error monitoring (e.g. `https://<key>@o0.ingest.sentry.io/0`). The app runs identically without it; Sentry's free tier covers this project's scale. |
 | `SENTRY_TRACES_SAMPLE_RATE` | No | Fraction of requests traced for performance monitoring (default `0.0` = error monitoring only). Keep `0.0` to protect free-tier quota. |
+| `GITHUB_MCP_TOKEN` | No | Optional GitHub PAT (repo read scope) enabling repository analysis. Absent → repo analysis is skipped and the agent runs unchanged. |
 
 ### 3. Start the backend API
 
@@ -162,6 +163,8 @@ npm test            # runs Vitest
 > ⚠️ Resume-path caveat on multiple instances: `AgentState` (live candidate lists and Pydantic objects) is intentionally **not** persisted to Redis — it's process-local working memory for the thread executing the job. `POST /api/recommend/{job_id}/answer` therefore has to reach the *same* instance that owns the job. If you scale beyond one backend instance, either pin all job execution to a single replica, or terminate TLS and enable sticky sessions / instance-affinity routing so `/answer` is routed to the correct instance. `GET /api/recommend/{job_id}` polling is fully safe to load-balance.
 
 **Sentry (`SENTRY_DSN`)** — Optional error monitoring via `sentry-sdk`. When set, **unhandled** route exceptions that produce HTTP 5xx are captured automatically by the FastAPI integration — no per-route wiring, and `HTTPException` responses (e.g. the 404/429 above) are intentionally **not** reported. The wall-clock job-timeout path and graph exceptions are caught deliberately by `app/api/main.py` and never reach FastAPI, so those two are reported explicitly (`capture_exception` / `capture_message`); all of it is a silent no-op when `SENTRY_DSN` is unset. Sentry's free tier covers this project's scale. `SENTRY_TRACES_SAMPLE_RATE` defaults to `0.0` (error monitoring only — tracing burns free-tier quota fast).
+
+**GitHub MCP (`GITHUB_MCP_TOKEN`)** — Optional. A GitHub PAT with `repo` scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
 
 **CI/CD (status badges at the top of this file)** — GitHub Actions run `Backend Tests` (pytest) and `Frontend Tests` (Vitest + `next build`) on push to `main`/`V2` and on PRs into those branches. The frontend workflow installs a *pinned* `@rolldown/binding-linux-x64-gnu` (exact version taken from `package-lock.json`) — a workaround for npm's optional-dependency bug `npm/cli#4828`, without which `npm ci` succeeds (exit 0) but the platform binding is silently omitted and vitest exits immediately at startup. Don't remove that step if the frontend tests ever start failing with "Cannot find native binding".
 

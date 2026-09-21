@@ -8,6 +8,7 @@ import { StageProgress } from "@/components/StageProgress";
 import { AwaitingInputPanel } from "@/components/AwaitingInputPanel";
 import { ResultReport } from "@/components/ResultReport";
 import { TerraformViewer } from "@/components/TerraformViewer";
+import { FollowupPanel } from "@/components/FollowupPanel";
 import { ErrorPanel } from "@/components/ErrorPanel";
 import { LiveStatsReadout } from "@/components/LiveStatsReadout";
 import { SectionNav } from "@/components/SectionNav";
@@ -446,6 +447,13 @@ export default function Home() {
                         </div>
                       </>
                     )}
+
+                    {/* Follow-up Q&A — only on completed jobs */}
+                    <hr className="console-rule my-0" />
+                    <FollowupPanel
+                      jobId={jobResponse!.job_id}
+                      initialHistory={jobResponse!.followup_history ?? []}
+                    />
                   </div>
 
                   {/* Right: sticky request summary (desktop only) */}

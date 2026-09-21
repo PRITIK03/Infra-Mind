@@ -1,4 +1,4 @@
-import type { JobResponse, RunsResponse } from "./types";
+import type { FollowupExchange, JobResponse, RunsResponse } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
 
@@ -57,6 +57,22 @@ export async function answerJob(
   });
 }
 
+/** POST /api/recommend/{job_id}/followup — ask a question about a completed recommendation */
+export async function askFollowup(
+  jobId: string,
+  question: string
+): Promise<{
+  job_id: string;
+  answer: string;
+  exchange: FollowupExchange;
+  followup_history: FollowupExchange[];
+}> {
+  return request(`/api/recommend/${jobId}/followup`, {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
+}
+
 /** GET /api/stats — live instance type counts for landing page readout */
 export async function getStats(): Promise<{ ec2: number; rds: number; cache: number }> {
   return request<{ ec2: number; rds: number; cache: number }>("/api/stats");
@@ -75,3 +91,4 @@ export async function getRuns(): Promise<RunsResponse> {
     signal: AbortSignal.timeout(10000),
   });
 }
+

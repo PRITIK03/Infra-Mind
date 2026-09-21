@@ -119,6 +119,12 @@ export interface InstanceCandidate {
 // ─── Polling response shapes ───────────────────────────────────────────────
 // Fields are conditionally present — absent when not applicable.
 
+export interface FollowupExchange {
+  question: string;
+  answer: string;
+  timestamp: string;
+}
+
 export interface JobResponse {
   job_id: string;
   status: JobStatus;
@@ -132,6 +138,8 @@ export interface JobResponse {
   retry_info?: string | null;
   // error only:
   error?: string;
+  /** Conversational follow-up Q&A history — populated after job is done */
+  followup_history?: FollowupExchange[];
 }
 
 // ─── Ordered stage list — drives the progress step-list ───────────────────

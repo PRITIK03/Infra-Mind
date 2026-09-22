@@ -7,6 +7,7 @@ depends on wall-clock/random state — the same inputs always yield the same
 output, which makes every rule exhaustively unit-testable.
 """
 
+from app.analysis.fargate import build_containerized_alternative
 from app.analysis.well_architected import build_well_architected_review
 
-__all__ = ["build_well_architected_review"]
+__all__ = ["build_containerized_alternative", "build_well_architected_review"]

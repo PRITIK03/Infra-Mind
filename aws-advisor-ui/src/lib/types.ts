@@ -72,6 +72,19 @@ export interface SystemDesignRecommendation {
    * from fields already present in the recommendation. Never LLM-generated.
    */
   well_architected_review?: WellArchitectedFinding[] | null;
+  /**
+   * Deterministic ECS Fargate alternative to the compute tier.
+   * Only offered when repository analysis detected a Dockerfile.
+   */
+  containerized_alternative?: ContainerizedAlternative | null;
+}
+
+export interface ContainerizedAlternative {
+  recommended: boolean;
+  fargate_cpu_units?: number | null;
+  fargate_memory_mib?: number | null;
+  why: string;
+  trade_off: string;
 }
 
 // ─── Well-Architected review (deterministic, no LLM) ──────────────────────

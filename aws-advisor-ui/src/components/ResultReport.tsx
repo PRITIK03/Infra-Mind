@@ -10,6 +10,7 @@ import { ScalingRangeBar } from "./ScalingRangeBar";
 import { ConfidenceStrip } from "./ConfidenceStrip";
 import { CopyableValue } from "./CopyableValue";
 import { WellArchitectedReview } from "./WellArchitectedReview";
+import { ContainerizedAlternative } from "./ContainerizedAlternative";
 
 interface Props {
   sdr: SystemDesignRecommendation;
@@ -85,10 +86,12 @@ function ComputeSection({
   compute,
   technicalNeeds,
   instanceCandidates,
+  containerizedAlternative,
 }: {
   compute: SystemDesignRecommendation["compute"];
   technicalNeeds?: TechnicalNeeds;
   instanceCandidates?: InstanceCandidate[];
+  containerizedAlternative?: SystemDesignRecommendation["containerized_alternative"];
 }) {
   return (
     <section>
@@ -117,6 +120,11 @@ function ComputeSection({
         )}
       </div>
       <AssumptionsList items={compute.assumptions} />
+
+      {/* ContainerizedAlternative (ECS Fargate) — only when repo analysis detected a Dockerfile */}
+      {containerizedAlternative && (
+        <ContainerizedAlternative alternative={containerizedAlternative} />
+      )}
 
       {/* ScalingRangeBar — only when technical_needs present */}
       {technicalNeeds && (
@@ -401,6 +409,7 @@ export function ResultReport({ sdr, technicalNeeds, instanceCandidates }: Props)
           compute={sdr.compute}
           technicalNeeds={technicalNeeds}
           instanceCandidates={instanceCandidates}
+          containerizedAlternative={sdr.containerized_alternative}
         />
       </div>
 

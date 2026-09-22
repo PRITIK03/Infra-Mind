@@ -466,6 +466,17 @@ class SystemDesignRecommendation(BaseModel):
             "for Terraform generation and grounding checks."
         ),
     )
+    # Deterministic ECS Fargate alternative — computed in plain Python from
+    # the already-recommended EC2 instance's vCPU/memory plus repo_analysis.
+    # Present ONLY when a Dockerfile was detected (repo analysis ran and
+    # found one); otherwise absent entirely.  No LLM call involved.
+    containerized_alternative: Optional["ContainerizedAlternative"] = Field(
+        default=None,
+        description=(
+            "ECS Fargate alternative to the compute tier, offered only when "
+            "the repository has a Dockerfile.  None when not applicable."
+        ),
+    )
     # Deterministic Well-Architected-style review — computed in plain Python
     # from fields already present on this recommendation plus TechnicalNeeds.
     # Never produced by an LLM call.  Empty list when no rule fired.
@@ -475,6 +486,49 @@ class SystemDesignRecommendation(BaseModel):
             "Deterministic Well-Architected-style findings derived only from "
             "fields already present in the recommendation and technical_needs. "
             "No LLM call is involved."
+        ),
+    )
+
+
+class ContainerizedAlternative(BaseModel):
+    """Deterministic ECS Fargate alternative to the EC2 compute tier.
+
+    Offered only for repo-analyzed requests with a real Dockerfile.  When
+    `recommended` is True, fargate_cpu_units/fargate_memory_mib hold the
+    nearest valid Fargate task size that meets or exceeds the recommended
+    EC2 instance's vCPU/memory (rounded up on both axes, per the AWS task
+    CPU/memory table).  When False — GPU workloads or instances too large
+    for the largest Fargate task — the size fields are None and `why`
+    explains the decision.
+    """
+
+    recommended: bool = Field(
+        ...,
+        description="Whether a Fargate alternative makes sense to offer at all.",
+    )
+    fargate_cpu_units: Optional[int] = Field(
+        default=None,
+        description=(
+            "Task-level CPU units (1024 = 1 vCPU).  None when not recommended."
+        ),
+    )
+    fargate_memory_mib: Optional[int] = Field(
+        default=None,
+        description="Task-level memory in MiB.  None when not recommended.",
+    )
+    why: str = Field(
+        ...,
+        description=(
+            "Templated explanation referencing the detected Dockerfile and the "
+            "EC2 sizing baseline it was matched against."
+        ),
+    )
+    trade_off: str = Field(
+        ...,
+        description=(
+            "Templated, even-handed summary of the real trade-offs — no "
+            "instance management and per-second billing versus less host "
+            "control and container start-up latency."
         ),
     )
 

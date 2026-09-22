@@ -122,6 +122,15 @@ export function recommendationToMarkdown({ sdr, technicalNeeds, userRequirements
   }
 
   addTier(lines, "Compute", sdr.compute);
+  if (sdr.containerized_alternative) {
+    lines.push("### Containerized Alternative (ECS Fargate)");
+    if (sdr.containerized_alternative.fargate_cpu_units != null && sdr.containerized_alternative.fargate_memory_mib != null) {
+      lines.push(`- Task Size: ${sdr.containerized_alternative.fargate_cpu_units} CPU units / ${sdr.containerized_alternative.fargate_memory_mib} MiB`);
+    }
+    addField(lines, "Why", sdr.containerized_alternative.why);
+    addField(lines, "Trade-off", sdr.containerized_alternative.trade_off);
+    lines.push("");
+  }
   addTier(lines, "Database", sdr.database);
   addTier(lines, "Cache", sdr.cache);
   lines.push("### Load Balancer");

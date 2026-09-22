@@ -35,6 +35,7 @@ from app.agent.nodes._recommendation_utils import (
     invalid_instance_types,
 )
 from app.agent.state import AgentState
+from app.analysis.fargate import build_containerized_alternative
 from app.analysis.well_architected import build_well_architected_review
 from app.llm.structured import StructuredOutputError, invoke_structured
 from app.models.schemas import (
@@ -548,6 +549,20 @@ def build_system_design_recommendation(
     result = result.model_copy(
         update={
             "well_architected_review": build_well_architected_review(result, needs)
+        }
+    )
+
+    # ── Deterministic ECS Fargate alternative ────────────────────────────────
+    # Same post-processing pattern: only present when repo analysis detected a
+    # Dockerfile.  None (absent) otherwise — no placeholder, no extra cost.
+    result = result.model_copy(
+        update={
+            "containerized_alternative": build_containerized_alternative(
+                result,
+                needs,
+                state.get("repo_analysis"),
+                compute_candidates,
+            )
         }
     )
 

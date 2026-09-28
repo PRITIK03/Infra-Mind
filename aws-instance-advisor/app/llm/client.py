@@ -50,9 +50,10 @@ def _reasoning_effort_for_budget(reasoning_max_tokens: int, max_tokens: int) -> 
     return "none"
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=12)
 def get_chat_model(
     use_secondary: bool = False,
+    use_tertiary: bool = False,
     model_override: str | None = None,
 ) -> ChatOpenAI:
     """
@@ -63,12 +64,15 @@ def get_chat_model(
     use_secondary:
         When True, build the client with `api_key_secondary`. Raises
         RuntimeError if no secondary key is configured.
+    use_tertiary:
+        When True, build the client with `api_key_tertiary`. Raises
+        RuntimeError if no tertiary key is configured.
     model_override:
         When set, build the client against this model slug instead of
         `settings.model_name`.  Used exclusively by opt-in consensus mode,
         which needs a *different* model than the primary one.  Caching is
-        keyed on (use_secondary, model_override) so each override gets its
-        own instance.
+        keyed on (use_secondary, use_tertiary, model_override) so each
+        override gets its own instance.
 
     Notes
     -----
@@ -81,7 +85,7 @@ def get_chat_model(
     configured. This passes OpenRouter's server-side model fallback
     array, which reroutes a request to the next model in the list when
     the primary is rate-limited or unavailable — a different mechanism
-    from the dual-key failover (which handles per-account 429s). The
+    from the multi-key failover (which handles per-account 429s). The
     two are additive: keys handle account quotas, this handles per-model
     congestion.
 
@@ -94,7 +98,13 @@ def get_chat_model(
     settings = get_llm_settings()
     api_key = settings.api_key
 
-    if use_secondary:
+    if use_tertiary:
+        if not settings.api_key_tertiary:
+            raise RuntimeError(
+                "Tertiary API key requested but API_KEY_3 is not configured."
+            )
+        api_key = settings.api_key_tertiary
+    elif use_secondary:
         if not settings.api_key_secondary:
             raise RuntimeError(
                 "Secondary API key requested but API_KEY_2 is not configured."

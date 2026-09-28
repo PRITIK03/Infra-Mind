@@ -99,13 +99,18 @@ def test_call_with_failover_exhausts_exactly_max_attempts_two_keys(monkeypatch):
             _call_with_failover(_track_and_raise)
 
     assert len(used_secondary) == MAX_RATE_LIMIT_ATTEMPTS
-    # Even attempts (0, 2) → primary; odd (1, 3) → secondary
+    # With 2 keys: num_slots=2, slot = attempt % 2
+    # Even attempts (0, 2, 4) → primary; odd (1, 3, 5) → secondary
     assert used_secondary[0] is False   # attempt 0 — primary
     assert used_secondary[1] is True    # attempt 1 — secondary
     if MAX_RATE_LIMIT_ATTEMPTS > 2:
         assert used_secondary[2] is False  # attempt 2 — primary
     if MAX_RATE_LIMIT_ATTEMPTS > 3:
         assert used_secondary[3] is True   # attempt 3 — secondary
+    if MAX_RATE_LIMIT_ATTEMPTS > 4:
+        assert used_secondary[4] is False  # attempt 4 — primary
+    if MAX_RATE_LIMIT_ATTEMPTS > 5:
+        assert used_secondary[5] is True   # attempt 5 — secondary
 
 
 def test_call_with_failover_raises_RateLimitExhaustedError_not_raw_429(monkeypatch):

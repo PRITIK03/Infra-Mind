@@ -54,6 +54,10 @@ class LLMSettings:
     # max_tokens so visible JSON output still has room.
     reasoning_max_tokens: int = 2048
     api_key_secondary: str | None = None
+    # Optional third key for extended rate-limit failover (API_KEY_3).
+    # When set the retry loop cycles primary→secondary→tertiary before
+    # exhausting.  When unset behavior is identical to the two-key case.
+    api_key_tertiary: str | None = None
     # Optional server-side model fallback list for OpenRouter.  When set,
     # OpenRouter will automatically reroute to the next model in the list if
     # the primary is rate-limited or unavailable — distinct from the
@@ -115,6 +119,7 @@ def get_llm_settings() -> LLMSettings:
         max_tokens=_optional_int("LLM_MAX_TOKENS", 8192),
         reasoning_max_tokens=_optional_int("LLM_REASONING_MAX_TOKENS", 2048),
         api_key_secondary=os.getenv("API_KEY_2") or None,
+        api_key_tertiary=os.getenv("API_KEY_3") or None,
         fallback_models=fallback_models,
         consensus_model=(os.getenv("CONSENSUS_MODEL") or "").strip() or None,
     )

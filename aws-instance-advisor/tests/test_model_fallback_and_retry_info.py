@@ -219,8 +219,8 @@ def test_retry_context_callback_called_on_rate_limit(monkeypatch):
     assert result == "ok"
     # Two retries fired (attempts 1 and 2), so callback called twice
     assert len(callback_calls) == 2
-    assert callback_calls[0] == (2, 4)  # attempt 2 of 4
-    assert callback_calls[1] == (3, 4)  # attempt 3 of 4
+    assert callback_calls[0] == (2, 6)  # attempt 2 of 6
+    assert callback_calls[1] == (3, 6)  # attempt 3 of 6
 
 
 def test_retry_context_not_called_when_first_attempt_succeeds(monkeypatch):

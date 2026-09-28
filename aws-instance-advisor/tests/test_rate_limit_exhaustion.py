@@ -61,6 +61,7 @@ def test_call_with_failover_exhausts_exactly_max_attempts_single_key(monkeypatch
     """With one key, all MAX_RATE_LIMIT_ATTEMPTS calls use the primary model."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     call_count = 0
@@ -85,6 +86,7 @@ def test_call_with_failover_exhausts_exactly_max_attempts_two_keys(monkeypatch):
     """With two keys, attempts alternate primary/secondary, still exactly MAX total."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.setenv("API_KEY_2", "secondary-key")
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     used_secondary: list[bool] = []
@@ -117,6 +119,7 @@ def test_call_with_failover_raises_RateLimitExhaustedError_not_raw_429(monkeypat
     """The caller sees RateLimitExhaustedError, not the raw openai.RateLimitError."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     with patch("app.llm.retry.time.sleep"):
@@ -137,6 +140,7 @@ def test_call_with_failover_succeeds_on_first_attempt(monkeypatch):
     """If the first call succeeds, no retries happen and the result is returned."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     call_count = 0
@@ -158,6 +162,7 @@ def test_call_with_failover_succeeds_on_second_attempt(monkeypatch):
     """Fails once then succeeds — returns result, sleeps exactly once."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     attempt = 0
@@ -186,6 +191,7 @@ def test_call_with_failover_does_not_retry_non_rate_limit_error(monkeypatch):
     """A ValueError (or any non-RateLimitError) propagates immediately, no retries."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     call_count = 0
@@ -212,6 +218,7 @@ def test_call_with_failover_uses_correct_exponential_backoff(monkeypatch):
     """Sleep durations follow BACKOFF_BASE_S * 2^(attempt-1), capped at BACKOFF_MAX_S."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     with patch("app.llm.retry.time.sleep") as mock_sleep:
@@ -241,6 +248,7 @@ def test_invoke_structured_surfaces_rate_limit_exhausted_not_structured_error(mo
     """
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     exhausted = RateLimitExhaustedError(
@@ -263,6 +271,7 @@ def test_invoke_structured_does_not_retry_on_rate_limit_exhausted(monkeypatch):
     """
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     exhausted = RateLimitExhaustedError("Rate limited.")

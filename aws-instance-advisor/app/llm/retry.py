@@ -123,18 +123,25 @@ def _call_with_failover(
     has_secondary = bool(settings.api_key_secondary)
     has_tertiary = bool(settings.api_key_tertiary)
 
-    # Determine how many distinct key slots we cycle through.
-    # slot 0 = primary, slot 1 = secondary, slot 2 = tertiary.
-    num_slots = 1 + int(has_secondary) + int(has_tertiary)
+    # Build ordered list of key-selection tuples: (use_secondary, use_tertiary).
+    # Only slots for actually-configured keys are included, so the cycle never
+    # requests a key that doesn't exist.
+    #   primary always:   (False, False)
+    #   secondary if set: (True,  False)
+    #   tertiary if set:  (False, True)
+    key_slots: list[tuple[bool, bool]] = [(False, False)]
+    if has_secondary:
+        key_slots.append((True, False))
+    if has_tertiary:
+        key_slots.append((False, True))
+    num_slots = len(key_slots)
     last_exc: RateLimitError | None = None
 
     # Resolve callback: explicit arg wins; fall back to context var.
     cb = retry_callback if retry_callback is not None else _retry_context.get()
 
     for attempt in range(MAX_RATE_LIMIT_ATTEMPTS):
-        slot = attempt % num_slots  # 0=primary, 1=secondary, 2=tertiary
-        use_secondary = slot == 1
-        use_tertiary = slot == 2
+        use_secondary, use_tertiary = key_slots[attempt % num_slots]
 
         if attempt > 0:
             sleep_s = min(BACKOFF_BASE_S * (2 ** (attempt - 1)), BACKOFF_MAX_S)

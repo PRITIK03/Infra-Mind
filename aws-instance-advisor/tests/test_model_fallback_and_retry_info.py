@@ -193,6 +193,7 @@ def test_retry_context_callback_called_on_rate_limit(monkeypatch):
     """_call_with_failover reads _retry_context and calls it on each retry."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     callback_calls: list[tuple[int, int]] = []
@@ -227,6 +228,7 @@ def test_retry_context_not_called_when_first_attempt_succeeds(monkeypatch):
     """Callback is never called when the first attempt succeeds."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     callback_calls: list = []
@@ -246,6 +248,7 @@ def test_retry_context_default_none_no_error(monkeypatch):
     """With no context var set, _call_with_failover succeeds silently (no AttributeError)."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     # _retry_context defaults to None — must not cause any error
@@ -259,6 +262,7 @@ def test_retry_context_explicit_callback_overrides_context_var(monkeypatch):
     """Explicit retry_callback= arg takes precedence over _retry_context."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     context_calls: list = []

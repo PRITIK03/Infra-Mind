@@ -79,6 +79,8 @@ Open `.env` and set:
 | `PORT` | No | FastAPI port (default `8000`) |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
+| `MAX_CONCURRENT_STREAMS_PER_IP` | No | Cap on concurrently open SSE progress streams per client IP (default `5`); replaces the requests-per-minute limiter for `/stream` |
+| `SSE_HEARTBEAT_SECONDS` | No | Idle interval after which an open SSE stream sends a keep-alive comment and re-checks the client connection (default `15`) |
 | `GITHUB_MCP_TOKEN` | No | Optional GitHub PAT (repo read scope) for repository analysis. Without it, the agent runs unchanged and repo analysis is skipped. |
 
 > **GitHub MCP** (`GITHUB_MCP_TOKEN`) — Optional. A GitHub PAT with `repo` read scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
@@ -216,6 +218,11 @@ Frontend: `../aws-advisor-ui/` (see root README).
 | `GET` | `/api/health` | Liveness probe |
 | `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
-| `POST` | `/api/recommend/{job_id}/answer` | Reply to a follow-up question `{ "answer": "..." }` |
+| `GET` | `/api/recommend/{job_id}/stream` | Live progress stream (SSE). Sends current state on connect, one event per transition, closes on `done`/`error` |
+| `GET` | `/api/share/{job_id}` | Read-only share alias; 404 unless status is `done` |
+| `POST` | `/api/recommend/{job_id}/answer` | Reply to an agent clarifying question `{ "answer": "..." }` |
+| `POST` | `/api/recommend/{job_id}/followup` | Ask a follow-up question on a completed recommendation `{ "question": "..." }` |
+| `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) |
+| `GET` | `/api/runs` | Paginated run history (`?page=1&page_size=20`) |
 
 Job status values: `collecting` → `running` → `awaiting_input` → `done` / `error`

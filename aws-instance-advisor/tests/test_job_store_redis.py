@@ -251,7 +251,9 @@ def test_build_job_store_uses_redis_when_configured(monkeypatch):
         return_value=RedisJobStore(fakeredis.FakeStrictRedis()),
     ) as from_url:
         store = build_job_store()
-    from_url.assert_called_once_with("redis://localhost:6379/0")
+    # publisher=None: no event bus passed, so the store keeps its
+    # pre-streaming behaviour (see app/api/event_bus.py for the bus).
+    from_url.assert_called_once_with("redis://localhost:6379/0", publisher=None)
     assert isinstance(store, RedisJobStore)
 
 

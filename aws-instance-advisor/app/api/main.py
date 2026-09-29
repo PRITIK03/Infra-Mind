@@ -7,6 +7,15 @@ GET /api/recommend/{job_id} for progress. The agent's multi-turn
 requirement-collection loop is surfaced via the awaiting_input status +
 POST /api/recommend/{job_id}/answer.
 
+Real-time progress (Server-Sent Events)
+--------------------------------------
+GET /api/recommend/{job_id}/stream pushes those same snapshots as they
+happen, for clients that can hold a connection open.  Polling remains
+supported unchanged as the fallback, and events are published from the job
+store's existing state-transition points (publish implemented in
+app/api/job_store.py, transport in app/api/event_bus.py) so there is exactly
+one source of truth for progress.
+
 Thread-pool sizing
 ------------------
 We use an explicit ThreadPoolExecutor rather than the default
@@ -39,22 +48,36 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 import os
 import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent.graph import build_graph
 from app.agent.state import AgentState
-from app.api.job_store import Job, JobStatus, JobStoreBackend, build_job_store
+from app.api.event_bus import (
+    TERMINAL_STATUSES,
+    EventSubscription,
+    JobEventBus,
+    build_event_bus,
+)
+from app.api.job_store import (
+    Job,
+    JobStatus,
+    JobStoreBackend,
+    build_job_store,
+    job_snapshot_from_job,
+)
 from app.api.jobs import label_for_node
 from app.config import get_api_settings
 from app.models.schemas import SystemDesignRecommendation, UserRequirements
@@ -280,7 +303,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-jobs: JobStoreBackend = build_job_store()
+# Pluggable publish/subscribe backend for the SSE progress stream
+# (app/api/event_bus.py).  Selected from the same REDIS_URL as the job store
+# and passed to the store so every state transition is published from the
+# existing update points — no parallel event system.
+event_bus: JobEventBus = build_event_bus()
+jobs: JobStoreBackend = build_job_store(publisher=event_bus)
+
+
+def _client_id(request: Request) -> str:
+    """Client identity used by the rate limiter and the stream limiter.
+
+    The single source of truth for IP extraction: the streaming endpoint
+    reuses this rather than reimplementing proxy/None handling.
+    """
+    return request.client.host if request.client else "unknown"
 
 
 class InMemoryRateLimiter:
@@ -317,6 +354,66 @@ recommend_rate_limiter = InMemoryRateLimiter(
     RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
 )
+
+# Idle SSE streams wake up every this many seconds to (a) emit a comment
+# heartbeat so proxies don't drop a quiet connection and (b) notice a client
+# that has gone away.  15s is comfortably inside typical proxy idle timeouts.
+SSE_HEARTBEAT_SECONDS: float = float(os.getenv("SSE_HEARTBEAT_SECONDS", "15"))
+
+# Cap on *concurrently open* progress streams per client IP.
+MAX_CONCURRENT_STREAMS_PER_IP: int = int(os.getenv("MAX_CONCURRENT_STREAMS_PER_IP", "5"))
+
+
+class InMemoryConcurrentStreamLimiter:
+    """Bounds concurrently open SSE streams per client IP.
+
+    A long-lived streaming connection is architecturally different from
+    repeated quick REST calls, so the requests-per-minute limiter is
+    deliberately NOT applied to the stream endpoint: a sliding request
+    window would either reject a legitimate second tab (the connection
+    itself costs one "request" that stays open) or, if incremented once on
+    connect, would never reflect that the connection is still held.
+
+    Instead this counts *open* streams and releases a slot the moment the
+    generator finishes — on the terminal event, on client disconnect, or on
+    task cancellation.  Kept small (default 5) because each open stream
+    holds a subscription and an event loop task.
+    """
+
+    def __init__(self, max_streams: int) -> None:
+        self.max_streams = max(1, max_streams)
+        self._active: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def acquire(self, client_id: str) -> bool:
+        """Reserve a slot; returns False when the client is at the cap."""
+        with self._lock:
+            current = self._active.get(client_id, 0)
+            if current >= self.max_streams:
+                return False
+            self._active[client_id] = current + 1
+            return True
+
+    def release(self, client_id: str) -> None:
+        """Return a slot (idempotent — safe to call on paths that never acquired)."""
+        with self._lock:
+            current = self._active.get(client_id, 0)
+            if current <= 1:
+                self._active.pop(client_id, None)
+            else:
+                self._active[client_id] = current - 1
+
+    def active_count(self, client_id: str) -> int:
+        with self._lock:
+            return self._active.get(client_id, 0)
+
+    def clear(self) -> None:
+        """Clear state for tests and controlled in-process maintenance."""
+        with self._lock:
+            self._active.clear()
+
+
+stream_limiter = InMemoryConcurrentStreamLimiter(MAX_CONCURRENT_STREAMS_PER_IP)
 
 # Single shared executor for all background agent runs.
 # Defined at module level so it is shared across requests and can be
@@ -647,23 +744,14 @@ def _serialize_result(state: AgentState) -> dict[str, Any]:
 
 
 def _job_response(job: Job) -> dict[str, Any]:
-    resp: dict[str, Any] = {
-        "job_id": job.job_id,
-        "status": job.status,
-        "current_stage": job.current_stage,
-        "created_at": job.created_at,
-    }
-    if job.retry_info is not None:
-        resp["retry_info"] = job.retry_info
-    if job.status == "awaiting_input" and job.next_question is not None:
-        resp["next_question"] = job.next_question
-    if job.status == "done" and job.result is not None:
-        resp["result"] = job.result
-    if job.status == "error" and job.error is not None:
-        resp["error"] = job.error
-    if job.followup_history:
-        resp["followup_history"] = [e.model_dump() for e in job.followup_history]
-    return resp
+    """Polling response for a job — the pre-existing public shape.
+
+    Delegates to ``job_store.job_snapshot_from_job`` so the polling response
+    and the SSE event payloads are literally the same projection: a client
+    can render a poll result and a stream event with one code path, and the
+    two can never drift apart.
+    """
+    return job_snapshot_from_job(job)
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +809,7 @@ def get_stats() -> dict[str, Any]:
 @app.post("/api/recommend")
 def create_recommend_job(request: Request, req: RecommendRequest) -> dict[str, Any]:
     """Kick off a new agent run. Returns immediately with a job_id to poll."""
-    client_id = request.client.host if request.client else "unknown"
+    client_id = _client_id(request)
     allowed, retry_after = recommend_rate_limiter.allow(client_id)
     if not allowed:
         raise HTTPException(
@@ -754,10 +842,177 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
     (when the Redis-backed store is configured) never blocks the event
     loop under concurrent polling — the same discipline already applied
     to the blocking graph execution.
+
+    Unchanged by the streaming feature: this remains the polling interface
+    (backward compatible, and the fallback for clients or intermediaries
+    that can't hold an SSE connection open) and returns exactly the same
+    document each streamed event carries.
     """
     job = await asyncio.to_thread(jobs.get, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return _job_response(job)
+
+
+# ---------------------------------------------------------------------------
+# Real-time progress streaming (Server-Sent Events)
+#
+# Additive: the polling endpoint above keeps working unchanged.  This pushes
+# the very same snapshots as they happen, from the state transitions that
+# already exist (JobStoreBackend.update_stage / update_status /
+# update_retry_info) — there is no parallel event system.
+# ---------------------------------------------------------------------------
+
+SSE_MEDIA_TYPE = "text/event-stream"
+_HEARTBEAT_FRAME = ": keep-alive\n\n"
+
+
+def _sse_frame(payload: dict[str, Any]) -> str:
+    """Render one SSE data frame.
+
+    ``json.dumps`` escapes newlines inside strings, so a payload is always a
+    single ``data:`` line.  That matters: an unescaped newline would end the
+    event early in every SSE client.
+    """
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+async def _sse_event_stream(
+    request: Request,
+    job_id: str,
+    subscription: EventSubscription,
+    client_id: str,
+) -> AsyncIterator[str]:
+    """Generator behind the SSE endpoint: current state, then live updates.
+
+    Owns the subscription and the concurrency slot and releases both in
+    ``finally``, which runs on the terminal event, on a detected client
+    disconnect, and on task cancellation (how an ASGI server tears a stream
+    down when the browser goes away).  That last case is the classic SSE
+    leak — without it the backend keeps producing frames for nobody.
+    """
+    try:
+        # The subscription is already active, so a transition landing between
+        # this read and the first yield is queued rather than lost.
+        job = await asyncio.to_thread(jobs.get, job_id)
+        if job is None:
+            # Only reachable if the job vanished between the route's 404
+            # check and here (e.g. Redis TTL expiry).  Terminate, don't hang.
+            yield _sse_frame(
+                {
+                    "job_id": job_id,
+                    "status": "error",
+                    "current_stage": "Unknown",
+                    "error": f"Job {job_id} not found",
+                }
+            )
+            return
+
+        last_payload = _job_response(job)
+        yield _sse_frame(last_payload)
+        if last_payload.get("status") in TERMINAL_STATUSES:
+            # Connected after the job finished: that snapshot *is* the final
+            # event, so there is nothing left to wait for.
+            return
+
+        while True:
+            event = await subscription.next_event(timeout=SSE_HEARTBEAT_SECONDS)
+            if event is None:
+                # Idle window: emit a heartbeat and use the wake-up to check
+                # whether the client is still there.
+                if subscription.closed or await request.is_disconnected():
+                    break
+                yield _HEARTBEAT_FRAME
+                continue
+            if event == last_payload:
+                continue  # duplicate snapshot — nothing new to report
+            last_payload = event
+            yield _sse_frame(event)
+            if event.get("status") in TERMINAL_STATUSES:
+                break  # terminal: close server-side, no further events exist
+    finally:
+        subscription.close()
+        stream_limiter.release(client_id)
+
+
+@app.get("/api/recommend/{job_id}/stream")
+async def stream_job_progress(request: Request, job_id: str) -> StreamingResponse:
+    """Live job progress as Server-Sent Events.
+
+    Behaviour:
+      * the current state is sent immediately on connect, so a client that
+        attaches mid-run (or after completion) is correct from frame one;
+      * one event per state transition from the store's existing update
+        points, including the timeout watchdog's terminal error;
+      * the stream closes server-side after the terminal ``done``/``error``
+        event, and also when the client disconnects.
+
+    Each event's payload is the same JSON document
+    ``GET /api/recommend/{job_id}`` returns, so polling and streaming clients
+    share one rendering path.
+
+    Concurrency is bounded per IP by open *streams* rather than by the
+    requests-per-minute limiter: a single long-lived connection is not a
+    burst of requests, and a per-minute window would miscount it (blocking a
+    second legitimate tab, or never reflecting that a stream is still open).
+    """
+    # 404 before reserving a slot: an unknown/expired id must not consume a
+    # client's stream budget.
+    job = await asyncio.to_thread(jobs.get, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    client_id = _client_id(request)
+    if not stream_limiter.acquire(client_id):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many concurrent progress streams "
+                f"(max {stream_limiter.max_streams} per client)."
+            ),
+            headers={"Retry-After": "5"},
+        )
+
+    try:
+        subscription = await event_bus.subscribe(job_id)
+    except Exception:
+        # Never leak the slot if subscribing itself fails.
+        stream_limiter.release(client_id)
+        raise
+
+    return StreamingResponse(
+        _sse_event_stream(request, job_id, subscription, client_id),
+        media_type=SSE_MEDIA_TYPE,
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Proxies (nginx especially) buffer proxied responses by default,
+            # which would hold frames back until their buffer fills.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/share/{job_id}")
+async def get_shared_result(job_id: str) -> dict[str, Any]:
+    """Read-only alias of the polling endpoint, for share links.
+
+    A new endpoint is only justified for the contract it enforces: a share
+    link should only work for a completed result, so anything that is not
+    ``status == "done"`` (in progress, awaiting input, failed, or expired)
+    returns 404 instead of exposing progress or error detail.
+
+    Access-control note: there is no auth on this app, and
+    ``GET /api/recommend/{job_id}`` already returns a job's result to anyone
+    holding its unguessable UUIDv4 — a pre-existing design characteristic of
+    this backend (and the same reason the polling endpoint is safe to load
+    balance), not a privacy regression introduced by sharing.  This alias
+    adds the "finished results only" rule; genuine access control would need
+    authn/authz on both routes, which is out of scope here.
+    """
+    job = await asyncio.to_thread(jobs.get, job_id)
+    if job is None or job.status != "done":
+        raise HTTPException(status_code=404, detail=f"Shared result {job_id} not found")
     return _job_response(job)
 
 
@@ -768,7 +1023,7 @@ async def answer_question(request: Request, job_id: str, req: AnswerRequest) -> 
     the job is in 'awaiting_input' status. Resumes execution in the
     background.
     """
-    client_id = request.client.host if request.client else "unknown"
+    client_id = _client_id(request)
     allowed, retry_after = recommend_rate_limiter.allow(client_id)
     if not allowed:
         raise HTTPException(
@@ -801,7 +1056,7 @@ async def ask_followup_question(
     Ask a conversational follow-up question on an already completed job.
     Only valid when the job's status is 'done'.
     """
-    client_id = request.client.host if request.client else "unknown"
+    client_id = _client_id(request)
     allowed, retry_after = recommend_rate_limiter.allow(client_id)
     if not allowed:
         raise HTTPException(

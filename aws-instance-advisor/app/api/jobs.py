@@ -20,6 +20,9 @@ from app.api.job_store import (
     JobStoreBackend,
     RedisJobStore,
     build_job_store,
+    job_snapshot,
+    job_snapshot_from_job,
+    job_snapshot_from_record,
 )
 
 # ``JobStore`` is the historical name for the in-memory store; keep it as
@@ -36,6 +39,9 @@ __all__ = [
     "RedisJobStore",
     "STAGE_LABELS",
     "build_job_store",
+    "job_snapshot",
+    "job_snapshot_from_job",
+    "job_snapshot_from_record",
     "label_for_node",
 ]
 

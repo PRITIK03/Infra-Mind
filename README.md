@@ -82,6 +82,8 @@ Open `.env` and set:
 | `DATABASE_URL` | No | Optional SQLite/Postgres URL enabling run-history persistence via `GET /api/runs`. Without it, jobs are process-local and lost on restart. |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
+| `MAX_CONCURRENT_STREAMS_PER_IP` | No | Cap on concurrently open SSE progress streams per client IP (default `5`). Applies instead of the requests-per-minute limiter to `GET /api/recommend/{job_id}/stream`. |
+| `SSE_HEARTBEAT_SECONDS` | No | Idle interval after which an open progress stream sends a keep-alive comment and checks whether the client is still connected (default `15`) |
 | `REDIS_URL` | No | Optional Redis URL enabling a persistent job store (survives restarts, shared across backend instances). Without it, jobs are in-memory only — fine for single-instance dev/demo. Records expire after 24h. |
 | `SENTRY_DSN` | No | Optional Sentry Data Source Name for error monitoring (e.g. `https://<key>@o0.ingest.sentry.io/0`). The app runs identically without it; Sentry's free tier covers this project's scale. |
 | `SENTRY_TRACES_SAMPLE_RATE` | No | Fraction of requests traced for performance monitoring (default `0.0` = error monitoring only). Keep `0.0` to protect free-tier quota. |
@@ -161,10 +163,13 @@ npm test            # runs Vitest
 
 **Redis (`REDIS_URL`)** — Without it, jobs live in process-local memory only (fine for single-instance dev/demo). Set it to survive backend restarts and to share jobs across multiple instances/pods; job records carry a 24h TTL so Redis doesn't grow unbounded.
 > ⚠️ Resume-path caveat on multiple instances: `AgentState` (live candidate lists and Pydantic objects) is intentionally **not** persisted to Redis — it's process-local working memory for the thread executing the job. `POST /api/recommend/{job_id}/answer` therefore has to reach the *same* instance that owns the job. If you scale beyond one backend instance, either pin all job execution to a single replica, or terminate TLS and enable sticky sessions / instance-affinity routing so `/answer` is routed to the correct instance. `GET /api/recommend/{job_id}` polling is fully safe to load-balance.
+> 📡 Progress streaming follows the same rule: with `REDIS_URL` set, job events fan out across replicas over Redis Pub/Sub, so `GET /api/recommend/{job_id}/stream` may attach to any instance. Without it, the stream (like the job itself) is served only by the instance that owns the job.
 
 **Sentry (`SENTRY_DSN`)** — Optional error monitoring via `sentry-sdk`. When set, **unhandled** route exceptions that produce HTTP 5xx are captured automatically by the FastAPI integration — no per-route wiring, and `HTTPException` responses (e.g. the 404/429 above) are intentionally **not** reported. The wall-clock job-timeout path and graph exceptions are caught deliberately by `app/api/main.py` and never reach FastAPI, so those two are reported explicitly (`capture_exception` / `capture_message`); all of it is a silent no-op when `SENTRY_DSN` is unset. Sentry's free tier covers this project's scale. `SENTRY_TRACES_SAMPLE_RATE` defaults to `0.0` (error monitoring only — tracing burns free-tier quota fast).
 
 **GitHub MCP (`GITHUB_MCP_TOKEN`)** — Optional. A GitHub PAT with `repo` scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
+
+**Real-time progress streaming (`GET /api/recommend/{job_id}/stream`)** — Server-Sent Events endpoint that pushes the job's state as it changes, so the UI doesn't have to poll. On connect it immediately sends the job's *current* state (correct for a client that attaches mid-run, or after the job already finished), then one event per state transition, and closes the stream server-side once the job reaches `done` or `error`. Each event's payload is byte-for-byte the document `GET /api/recommend/{job_id}` returns, so streaming and polling clients share one rendering path — and polling remains supported unchanged as the fallback. Events are published from the store's existing state-transition points (`update_stage` / `update_status` / `update_retry_info`), including the wall-clock timeout watchdog, so there is no parallel progress mechanism to keep in sync. Transport is chosen with the same graceful-optional pattern as the job store: in-process asyncio fan-out by default, Redis Pub/Sub when `REDIS_URL` is set (required for correct fan-out across multiple backend replicas). Client disconnects (tab closed / navigated away) are detected and the server-side generator stops; the requests-per-minute limiter is deliberately not applied here — a long-lived connection is capped by `MAX_CONCURRENT_STREAMS_PER_IP` open streams instead. `GET /api/share/{job_id}` is a thin read-only alias that returns the same document but 404s unless the job's status is `done`, for share links that should only ever resolve to a finished result.
 
 **Conversational follow-up (`POST /api/recommend/{job_id}/followup`)** — Once a recommendation job reaches `done`, users can ask natural-language follow-up questions against the completed architecture. The endpoint answers directly from the computed recommendation context and persists Q&A history on the job record (supported across both in-memory and Redis backends). It performs a focused single LLM call and never re-runs requirement gathering, research, or Terraform generation. Questions requiring fresh workload profiling or live AWS data are declined honestly.
 
@@ -230,10 +235,12 @@ Backend details: see [aws-instance-advisor/README.md](aws-instance-advisor/READM
 | `GET` | `/api/health` | Liveness probe |
 | `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
+| `GET` | `/api/recommend/{job_id}/stream` | Live progress stream (SSE, `text/event-stream`) — current state on connect, one event per transition, closes on `done`/`error` |
 | `POST` | `/api/recommend/{job_id}/answer` | Reply to an agent clarifying question `{ "answer": "..." }` |
 | `POST` | `/api/recommend/{job_id}/followup` | Ask a follow-up question on a completed recommendation `{ "question": "..." }` |
 | `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) for landing page readouts |
 | `GET` | `/api/runs` | Paginated run-history list; query params `?page=1&page_size=20` |
+| `GET` | `/api/share/{job_id}` | Read-only share alias of `/api/recommend/{job_id}`; 404 unless status is `done` |
 
 Job status values: `collecting` → `running` → `awaiting_input` → `done` / `error`
 

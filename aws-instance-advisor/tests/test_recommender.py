@@ -89,7 +89,7 @@ def test_recommend_instance_retries_once_then_accepts_valid_retry(mock_invoke):
     assert "not one of the available options" in retry_prompt
     assert "m5.large" in retry_prompt
     assert "m5.xlarge" in retry_prompt
-    assert "You MUST choose recommended_instance and alternative_instance" in retry_prompt
+    assert "You MUST set recommended_instance" in retry_prompt
 
 
 @patch("app.agent.nodes.recommender.invoke_structured")

@@ -57,8 +57,10 @@ def correction_prompt(
     return (
         f"{base_prompt}\n\n"
         f"Your previous answer suggested {invalid_joined}, which is not one "
-        f"of the available options. You MUST choose recommended_instance and "
-        f"alternative_instance only from this exact list: {allowed_joined}."
+        f"of the available options. You MUST set recommended_instance to one "
+        f"value from this exact list, and alternative_instance to a DIFFERENT "
+        f"value from the same list (or null if no second option makes sense): "
+        f"{allowed_joined}."
     )
 
 
@@ -100,17 +102,38 @@ def cache_correction_prompt(
     invalid_descriptions: list[str],
     allowed_pairs: list[tuple[str, CacheEngine]],
 ) -> str:
-    """Append a cache-specific correction note to base_prompt."""
-    invalid_joined = "; ".join(invalid_descriptions)
-    allowed_joined = ", ".join(
-        f"{itype!r} (engine: {eng.value})" for itype, eng in sorted(allowed_pairs, key=lambda p: (p[0], p[1].value))
+    """Append a cache-specific correction note to base_prompt.
+
+    Valid pairs are grouped by engine so the model can see at a glance which
+    instance types belong to each engine and pick a coherent (instance, engine)
+    pair for each field.  Only engines that actually have candidates are shown;
+    empty engine sections are suppressed entirely.
+    """
+    from collections import defaultdict
+
+    # Group by engine — preserve sorted order within each group.
+    by_engine: dict[str, list[str]] = defaultdict(list)
+    for itype, eng in sorted(allowed_pairs, key=lambda p: (p[1].value, p[0])):
+        by_engine[eng.value].append(itype)
+
+    # Build one line per engine, only for engines that have candidates.
+    engine_lines = "\n".join(
+        f"  Valid {eng_name} options: {', '.join(repr(t) for t in types)}"
+        for eng_name, types in sorted(by_engine.items())
     )
+
+    invalid_joined = "; ".join(invalid_descriptions)
+
     return (
         f"{base_prompt}\n\n"
         f"Your previous cache recommendation included {invalid_joined}, which "
-        f"is not a valid (instance_type, engine) combination in the live data. "
-        f"You MUST choose from these exact (instance_type, engine) pairs: "
-        f"{allowed_joined}."
+        f"is not a valid (instance_type, engine) combination in the live data.\n"
+        f"You MUST pick valid pairs ONLY from the options below (grouped by engine):\n"
+        f"{engine_lines}\n"
+        f"Set cache.recommended_instance + cache.engine as one matched pair from "
+        f"the list above. Set cache.alternative_instance + cache.alternative_engine "
+        f"as a DIFFERENT matched pair from the same list, OR set both to null if no "
+        f"second valid option exists — do NOT fabricate an alternative."
     )
 
 

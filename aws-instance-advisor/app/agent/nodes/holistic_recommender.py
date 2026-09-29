@@ -357,9 +357,10 @@ def _database_correction(
     return (
         f"{base_prompt}\n\n"
         f"Your previous database recommendation included {invalid_joined}, which "
-        f"is not in the live RDS candidate set. You MUST choose "
-        f"database.recommended_instance and alternative_instance only from: "
-        f"{allowed_joined}."
+        f"is not in the live RDS candidate set. You MUST set "
+        f"database.recommended_instance to one value from this exact list, and "
+        f"database.alternative_instance to a DIFFERENT value from the same list "
+        f"(or null if no second option makes sense): {allowed_joined}."
     )
 
 

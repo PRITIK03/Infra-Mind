@@ -112,8 +112,29 @@ hr.console-rule {
   }
   /* Pause blinking/pulsing indicators for motion-sensitive users */
   .animate-pulse,
-  .typewriter-cursor::after {
+  .typewriter-cursor::after,
+  .stage-flash {
     animation: none;
+  }
+}
+
+/* ── Stage-flash — one immediate highlight when a step becomes current ── */
+/* Applied only to the newly active label (key changes per stage, so the
+   animation retriggers exactly when a different step turns current). Earned
+   by SSE: transitions now arrive the instant they happen, so the highlight
+   marks a real live change rather than a poll tick. */
+.stage-flash {
+  animation: stage-flash 0.6s ease-out both;
+}
+
+@keyframes stage-flash {
+  0% {
+    color: #e8a33d;
+    text-shadow: 0 0 12px rgba(232, 163, 61, 0.45);
+  }
+  100% {
+    color: inherit;
+    text-shadow: none;
   }
 }
 

@@ -46,6 +46,36 @@ export async function pollJob(jobId: string): Promise<JobResponse> {
   return request<JobResponse>(`/api/recommend/${jobId}`);
 }
 
+/** GET /api/recommend/{job_id}/stream — SSE progress stream URL.
+
+Returns null when the backend URL is unconfigured, mirroring request().
+EventSource is constructed by the caller (see useJobPoller) so it can be
+closed on terminal events and replaced by polling on connection failure.
+*/
+export function streamJobUrl(jobId: string): string | null {
+  if (!BASE) return null;
+  return `${BASE}/api/recommend/${jobId}/stream`;
+}
+
+/** GET /api/share/{job_id} — read-only snapshot of a finished job.
+
+Same document as pollJob for a done job; the backend answers 404 for
+anything else (running, awaiting input, errored, or unknown id), which
+request() surfaces as an Error carrying the backend's detail text.
+*/
+export async function fetchSharedJob(jobId: string): Promise<JobResponse> {
+  return request<JobResponse>(`/api/share/${jobId}`);
+}
+
+/** Shareable result URL for a finished job — {origin}/share/{job_id}.
+
+Kept next to the API client (rather than scattered through components) so
+the main page and the share page can never disagree on the link shape.
+*/
+export function shareUrl(jobId: string): string {
+  return `${window.location.origin}/share/${encodeURIComponent(jobId)}`;
+}
+
 /** POST /api/recommend/{job_id}/answer — submit a follow-up answer */
 export async function answerJob(
   jobId: string,

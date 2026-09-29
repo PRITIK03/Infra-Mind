@@ -15,6 +15,7 @@ import { SectionNav } from "@/components/SectionNav";
 import { RequestSummary } from "@/components/RequestSummary";
 import { CopyReportButton } from "@/components/CopyReportButton";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
+import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
 import { ResultSummaryStrip } from "@/components/ResultSummaryStrip";
 import { PipelineTrace } from "@/components/PipelineTrace";
 import type { RunRecord } from "@/lib/types";
@@ -408,6 +409,7 @@ export default function Home() {
                       technicalNeeds={technicalNeeds}
                       userRequirements={userRequirements}
                     />
+                    <CopyShareLinkButton jobId={jobResponse!.job_id} />
                     <ExportPdfButton />
                     <button
                       type="button"

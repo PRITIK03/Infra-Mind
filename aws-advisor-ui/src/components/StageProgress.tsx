@@ -148,14 +148,17 @@ export function StageProgress({ currentStage, status, retryInfo }: Props) {
                 )}
               </div>
 
-              {/* Stage label */}
+              {/* Stage label — the key changes when a stage turns current, so
+                  the stage-flash highlight retriggers exactly on transition
+                  (the immediate feedback real-time streaming now allows). */}
               <span
+                key={isCurrent ? `current-${stage}` : `idle-${stage}`}
                 className={[
                   "font-mono text-sm leading-tight pb-1.5",
                   isDone
                     ? "text-ink/50"
                     : isCurrent
-                    ? "text-ink"
+                    ? "text-ink stage-flash"
                     : isPending
                     ? "text-ink-dim"
                     : "text-ink-muted",

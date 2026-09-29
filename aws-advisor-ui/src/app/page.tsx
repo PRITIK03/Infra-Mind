@@ -14,6 +14,8 @@ import { LiveStatsReadout } from "@/components/LiveStatsReadout";
 import { SectionNav } from "@/components/SectionNav";
 import { RequestSummary } from "@/components/RequestSummary";
 import { CopyReportButton } from "@/components/CopyReportButton";
+import { ExportPdfButton } from "@/components/ExportPdfButton";
+import { ResultSummaryStrip } from "@/components/ResultSummaryStrip";
 import { PipelineTrace } from "@/components/PipelineTrace";
 import type { RunRecord } from "@/lib/types";
 import { BackendStatus } from "@/components/BackendStatus";
@@ -406,6 +408,7 @@ export default function Home() {
                       technicalNeeds={technicalNeeds}
                       userRequirements={userRequirements}
                     />
+                    <ExportPdfButton />
                     <button
                       type="button"
                       onClick={reset}
@@ -424,14 +427,17 @@ export default function Home() {
 
                 <div className="grid gap-6 xl:grid-cols-[200px_1fr_280px]">
                   {/* Left: sticky section nav (desktop only) */}
-                  <SectionNav
-                    sdr={sdr}
-                    technicalNeeds={technicalNeeds}
-                    hasTerraform={Boolean(tfFiles && Object.keys(tfFiles).length > 0)}
-                  />
+                  <div className="print:hidden">
+                    <SectionNav
+                      sdr={sdr}
+                      technicalNeeds={technicalNeeds}
+                      hasTerraform={Boolean(tfFiles && Object.keys(tfFiles).length > 0)}
+                    />
+                  </div>
 
                   {/* Center: main report */}
                   <div className="min-w-0">
+                    <ResultSummaryStrip sdr={sdr} />
                     <ResultReport
                       sdr={sdr}
                       technicalNeeds={technicalNeeds}
@@ -457,7 +463,7 @@ export default function Home() {
                   </div>
 
                   {/* Right: sticky request summary (desktop only) */}
-                  <div className="min-w-0 flex flex-col gap-6 xl:sticky xl:top-24 self-start">
+                  <div className="min-w-0 flex flex-col gap-6 xl:sticky xl:top-24 self-start print:hidden">
                     {technicalNeeds && (
                       <RequestSummary
                         tn={technicalNeeds}

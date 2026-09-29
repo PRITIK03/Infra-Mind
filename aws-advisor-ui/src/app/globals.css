@@ -155,3 +155,91 @@ details > summary {
 details > summary::-webkit-details-marker {
   display: none;
 }
+
+/* ── Print / Export-as-PDF ─────────────────────────────────── */
+@media print {
+  /* Force light-on-dark to render — Chrome & Firefox honour this */
+  :root {
+    color-scheme: dark;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Hide every chrome element that isn't the report content */
+  header,
+  footer,
+  nav,
+  .print\:hidden,
+  #followup,
+  [id="terraform"] .terraform-toolbar,
+  .section-nav-sidebar {
+    display: none !important;
+  }
+
+  /* Kill the ambient glow — it wastes toner and confuses PDF viewers */
+  body {
+    background-image: none !important;
+  }
+
+  /* Let the report flow across pages naturally */
+  main {
+    display: block !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+
+  /* Collapse the three-column grid to a single column */
+  .grid.xl\:grid-cols-\[200px_1fr_280px\] {
+    display: block !important;
+  }
+
+  /* Keep section headers with their first content line */
+  section,
+  .result-section,
+  [id="compute"],
+  [id="database"],
+  [id="cache"],
+  [id="load-balancer"],
+  [id="cost"],
+  [id="well-architected"] {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Restore opacity — animations are off in print, but opacity: 0 initial
+     state would hide everything if the page is printed before animation */
+  .result-section {
+    opacity: 1 !important;
+    animation: none !important;
+  }
+
+  /* Ensure the summary strip always shows at the top of the first page */
+  .print-summary-strip {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* Thin console rules survive as hairlines */
+  hr.console-rule {
+    border-top-color: rgba(237, 237, 234, 0.15) !important;
+  }
+
+  /* SVG-based components (ConfidenceStrip, TopologyDiagram, CandidateLandscape)
+     — let them size naturally; don't overflow the page */
+  svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  /* Prevent awkward orphaned headings */
+  h1, h2, h3 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* Terraform viewer: hide the tab bar, show only the first file's code */
+  [id="terraform"] {
+    page-break-before: always;
+    break-before: always;
+  }
+}

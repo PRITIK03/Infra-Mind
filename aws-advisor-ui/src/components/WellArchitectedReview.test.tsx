@@ -51,8 +51,8 @@ describe("WellArchitectedReview", () => {
     expect(labels).toEqual(["reliability", "operational excellence"]);
   });
 
-  it("distinguishes severity by opacity only — no extra colour classes", () => {
-    render(
+  it("distinguishes severity by dot opacity only — message text is consistently styled", () => {
+    const { container } = render(
       <WellArchitectedReview
         findings={[
           finding("reliability", "warning", "warn message"),
@@ -64,12 +64,33 @@ describe("WellArchitectedReview", () => {
     const warn = screen.getByText("warn message");
     const info = screen.getByText("info message");
 
-    // Higher opacity for warnings, same hue for both.
-    expect(Number(warn.style.opacity)).toBeGreaterThan(Number(info.style.opacity));
-    expect(warn.style.color).toBe(info.style.color);
-    // No colour-based badge utilities were introduced.
-    expect(warn.className).not.toMatch(/text-(red|amber|green|yellow|blue)/);
-    expect(info.className).not.toMatch(/text-(red|amber|green|yellow|blue)/);
+    // Message text must NOT carry opacity or colour variation by severity —
+    // the dot alone carries the severity signal so content stays readable.
+    expect(warn.style.opacity).toBe("");
+    expect(info.style.opacity).toBe("");
+    // Both message spans should share the same Tailwind class set.
+    expect(warn.className).toBe(info.className);
+    // No colour-based badge utilities should have been introduced.
+    expect(warn.className).not.toMatch(/text-(red|green|yellow|blue)/);
+    expect(info.className).not.toMatch(/text-(red|green|yellow|blue)/);
+
+    // The severity dot for each finding carries differentiated opacity via
+    // inline backgroundColor rgba string. Use the raw style attribute which
+    // JSDOM preserves exactly as authored.
+    const dots = container.querySelectorAll<HTMLElement>('[aria-hidden="true"].rounded-full');
+    expect(dots.length).toBe(2); // one per finding
+
+    // Extract opacity from rgba(r,g,b,opacity) in the style attribute string.
+    const parseOpacity = (el: HTMLElement): number => {
+      const styleAttr = el.getAttribute("style") ?? "";
+      const m = styleAttr.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)/);
+      return m ? Number(m[1]) : 0;
+    };
+
+    // warning dot (reliability pillar, first in canonical order) > info dot (security, second)
+    const warnDotOpacity = parseOpacity(dots[0]);
+    const infoDotOpacity = parseOpacity(dots[1]);
+    expect(warnDotOpacity).toBeGreaterThan(infoDotOpacity);
   });
 
   it("keeps multiple findings for the same pillar in one group", () => {

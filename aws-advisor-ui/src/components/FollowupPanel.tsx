@@ -72,7 +72,7 @@ export function FollowupPanel({ jobId, initialHistory = [] }: Props) {
               <p className="font-sans text-sm text-ink-muted leading-relaxed whitespace-pre-wrap">
                 {ex.answer}
               </p>
-              <span className="font-mono text-[10px] text-ink-dim">
+              <span className="font-mono text-xs text-ink-dim">
                 {new Date(ex.timestamp).toLocaleTimeString()}
               </span>
             </div>
@@ -132,7 +132,7 @@ export function FollowupPanel({ jobId, initialHistory = [] }: Props) {
 
       {/* Error */}
       {error && (
-        <p className="mt-2 font-mono text-xs text-red-400">
+        <p className="mt-2 font-mono text-xs text-amber/60">
           {error}
         </p>
       )}

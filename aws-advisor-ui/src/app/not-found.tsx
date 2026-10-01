@@ -20,7 +20,7 @@ export default function NotFound() {
       <nav className="mt-8 flex items-center gap-3 font-mono text-xs">
         <Link
           href="/"
-          className="text-amber hover:text-amber-dim transition-colors"
+          className="text-amber hover:text-amber/60 transition-colors"
         >
           ← back to advisor
         </Link>

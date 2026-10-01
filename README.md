@@ -88,6 +88,10 @@ Open `.env` and set:
 | `SENTRY_DSN` | No | Optional Sentry Data Source Name for error monitoring (e.g. `https://<key>@o0.ingest.sentry.io/0`). The app runs identically without it; Sentry's free tier covers this project's scale. |
 | `SENTRY_TRACES_SAMPLE_RATE` | No | Fraction of requests traced for performance monitoring (default `0.0` = error monitoring only). Keep `0.0` to protect free-tier quota. |
 | `GITHUB_MCP_TOKEN` | No | Optional GitHub PAT (repo read scope) enabling repository analysis. Absent → repo analysis is skipped and the agent runs unchanged. |
+| `LOG_FORMAT` | No | Backend log output: `json` (default, one JSON object per line for aggregators) or `text` (human-readable for local dev). |
+| `JOB_THREAD_POOL_SIZE` | No | Max simultaneous agent-run threads (default `8`, sized for small cloud hosts). |
+| `JOB_TIMEOUT_SECONDS` | No | Hard wall-clock limit for one complete agent run in seconds (default `600`). |
+| `MAX_SHUTDOWN_GRACE_SECONDS` | No | Grace period for in-flight jobs during shutdown in seconds (default `10`); the process exits after the cap even if jobs are still running. |
 
 ### 3. Start the backend API
 
@@ -233,6 +237,7 @@ Backend details: see [aws-instance-advisor/README.md](aws-instance-advisor/READM
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Liveness probe |
+| `GET` | `/api/health/ready` | Readiness probe: required config present, Redis `PING` when `REDIS_URL` is configured, configured-integrations status; 503 only when required config is missing |
 | `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
 | `GET` | `/api/recommend/{job_id}/stream` | Live progress stream (SSE, `text/event-stream`) — current state on connect, one event per transition, closes on `done`/`error` |

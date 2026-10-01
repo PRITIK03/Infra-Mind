@@ -161,7 +161,7 @@ export function CommandPalette({
             <button
               type="button"
               onClick={() => setView("commands")}
-              className="font-mono text-xs text-ink-dim transition-colors hover:text-amber"
+              className="font-mono text-[10px] uppercase tracking-widest text-ink-dim transition-colors hover:text-amber"
             >
               ← back to commands
             </button>

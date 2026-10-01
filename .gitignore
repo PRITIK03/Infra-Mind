@@ -67,3 +67,8 @@ yarn-error.log*
 verify.cmd
 **/verify.cmd
 
+
+# Playwright E2E artifacts (aws-advisor-ui/e2e suite)
+test-results/
+playwright-report/
+blob-report/

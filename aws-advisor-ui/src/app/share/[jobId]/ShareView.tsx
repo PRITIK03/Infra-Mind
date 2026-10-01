@@ -4,8 +4,14 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchSharedJob } from "@/lib/api";
 import type { JobResponse } from "@/lib/types";
+import dynamic from "next/dynamic";
 import { ResultReport } from "@/components/ResultReport";
-import { TerraformViewer } from "@/components/TerraformViewer";
+// Code-split for the same reason as on the advisor page: the highlighter
+// bundle only loads when a shared job actually carries Terraform files.
+const TerraformViewer = dynamic(
+  () => import("@/components/TerraformViewer").then((m) => m.TerraformViewer),
+  { ssr: false },
+);
 import { WellArchitectedReview } from "@/components/WellArchitectedReview";
 import { ContainerizedAlternative } from "@/components/ContainerizedAlternative";
 import { CostSection } from "@/components/CostSection";
@@ -125,8 +131,10 @@ function SharedResult({ job }: { job: JobResponse }) {
 
   return (
     <section aria-label="Shared recommendation">
-      {/* ── Framing: obviously a shared view, not an active session ── */}
-      <p className="font-mono text-xs text-ink-muted">
+      {/* ── Framing: obviously a shared view, not an active session ──
+          Same micro-label treatment as the section eyebrows elsewhere
+          (uppercase, tracked, ink-muted, thin rule underneath). */}
+      <p className="font-mono text-[10px] uppercase tracking-widest text-ink-muted pb-2 border-b border-border-subtle">
         Viewing a shared recommendation
       </p>
       {technicalNeeds && (

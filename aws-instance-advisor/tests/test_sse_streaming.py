@@ -1000,29 +1000,54 @@ def test_readiness_reports_redis_state_when_configured(
     _required_env, monkeypatch
 ):
     from app.api.health import build_readiness_report
+    from app.api.job_store import RedisJobStore
 
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
 
-    # Unreachable Redis (the configured backend's client raises on ping).
-    class _DownClient:
-        def ping(self) -> bool:
-            raise ConnectionError("connection refused")
+    # Unreachable Redis: a RedisJobStore whose public ping() raises.
+    class _DownStore(RedisJobStore):
+        def __init__(self) -> None:  # noqa: D107 - test stub, no init needed
+            pass
 
-    class _DownStore:
-        _redis = _DownClient()
+        def ping(self) -> None:
+            raise ConnectionError("connection refused")
 
     report, ready = build_readiness_report(_DownStore())
     assert ready is True  # degraded, not fatal
     assert report["checks"]["redis"] == "unreachable"
     assert report["integrations"]["redis"] is True
 
-    # Reachable Redis: a real ping-equivalent via fakeredis.
-    class _UpStore:
-        _redis = fakeredis.FakeStrictRedis()
+    # Reachable Redis: a real ping through fakeredis, via the store's
+    # public contract (no private-attribute peeking).
+    class _UpStore(RedisJobStore):
+        def __init__(self) -> None:  # noqa: D107 - test stub, no init needed
+            pass
 
+        def __getattr__(self, name):  # tolerate unpersisted internals
+            raise AttributeError(name)
+
+    _UpStore._redis = fakeredis.FakeStrictRedis()
     report, ready = build_readiness_report(_UpStore())
     assert ready is True
     assert report["checks"]["redis"] == "reachable"
+
+
+def test_readiness_names_in_memory_fallback_when_redis_configured(
+    _required_env, monkeypatch
+):
+    """REDIS_URL set but startup fell back to the in-memory store.
+
+    The store's own ping() trivially succeeds there, so the report must
+    name the concrete backend instead of claiming Redis is reachable.
+    """
+    from app.api.health import build_readiness_report
+    from app.api.job_store import InMemoryJobStore
+
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+
+    report, ready = build_readiness_report(InMemoryJobStore())
+    assert ready is True  # degraded-but-servable, not fatal
+    assert report["checks"]["redis"] == "unreachable (in-memory fallback store)"
 
 
 # ---------------------------------------------------------------------------

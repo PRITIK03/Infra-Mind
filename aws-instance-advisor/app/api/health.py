@@ -63,26 +63,30 @@ def build_readiness_report(jobs_store: Any = None) -> tuple[dict[str, Any], bool
         },
     }
 
-    redis_ok: bool | None = None
     if get_redis_settings().redis_url is not None:
+        from app.api.job_store import InMemoryJobStore
+
         try:
             store = jobs_store
             if store is None:
                 from app.api.runtime import jobs as runtime_jobs
 
                 store = runtime_jobs
-            client = getattr(store, "_redis", None)
-            if client is None:
-                # REDIS_URL is set but this process fell back to the
-                # in-memory store (Redis was unreachable at startup).
-                redis_ok = False
+            if isinstance(store, InMemoryJobStore):
+                # REDIS_URL is configured but this process fell back to the
+                # in-memory store (Redis was unreachable at startup). The
+                # store's ping() would trivially succeed here, so the
+                # concrete backend is named instead of lying by success.
+                checks["redis"] = "unreachable (in-memory fallback store)"
             else:
-                client.ping()
-                redis_ok = True
+                # Through the store's public contract
+                # (``JobStoreBackend.ping``), not a private attribute — a
+                # future internal refactor can't silently break readiness.
+                store.ping()
+                checks["redis"] = "reachable"
         except Exception as exc:
-            redis_ok = False
             logger.warning("Readiness: Redis ping failed (%s)", exc)
-        checks["redis"] = "reachable" if redis_ok else "unreachable"
+            checks["redis"] = "unreachable"
     else:
         checks["redis"] = "not configured (in-memory job store)"
 

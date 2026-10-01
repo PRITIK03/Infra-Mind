@@ -118,6 +118,17 @@ class JobStoreBackend(Protocol):
 
     def add_followup(self, job_id: str, exchange: FollowupExchange) -> None: ...
 
+    def ping(self) -> None:
+        """Cheap liveness check on the backend's own connection.
+
+        In-memory always succeeds; the Redis implementation performs one
+        lightweight ``PING``.  Used by the readiness endpoint so health
+        reporting depends on the store's *public* contract rather than a
+        private attribute — a future internal refactor can't silently
+        break ``GET /api/health/ready``.
+        """
+        ...
+
 
 class JobRecord(BaseModel):
     """Serializable projection of :class:`Job` — the API response surface.
@@ -302,6 +313,10 @@ class InMemoryJobStore:
             job = self._jobs.get(job_id)
             if job is not None:
                 job.followup_history.append(exchange)
+
+    def ping(self) -> None:
+        """In-memory store: nothing external to reach, always healthy."""
+        return None
 
 
 
@@ -495,6 +510,10 @@ class RedisJobStore:
             return
         record.followup_history.append(exchange)
         self._save_record(record)
+
+    def ping(self) -> None:
+        """One lightweight Redis PING; raises on an unreachable server."""
+        self._redis.ping()
 
 
 

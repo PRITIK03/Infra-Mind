@@ -3,10 +3,22 @@ name: Frontend Tests
 on:
   push:
     branches: [main, V2]
+    # Path filters: a backend-only change skips the frontend suite entirely.
+    # Exception: the backend's job snapshot projection is the API contract the
+    # frontend (share metadata + views) consumes, so touching it re-runs the
+    # frontend suite too.
+    paths:
+      - "aws-advisor-ui/**"
+      - ".github/workflows/frontend-tests.yml"
+      - "aws-instance-advisor/app/api/job_store.py"
   # pull_request.branches filters the BASE branch, so this covers PRs opened
   # from any feature branch into main/V2 without running on every feature push.
   pull_request:
     branches: [main, V2]
+    paths:
+      - "aws-advisor-ui/**"
+      - ".github/workflows/frontend-tests.yml"
+      - "aws-instance-advisor/app/api/job_store.py"
 
 jobs:
   vitest-and-build:

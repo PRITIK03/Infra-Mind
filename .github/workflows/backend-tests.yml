@@ -3,10 +3,17 @@ name: Backend Tests
 on:
   push:
     branches: [main, V2]
+    # Path filters: a frontend-only change skips the backend suite entirely.
+    paths:
+      - "aws-instance-advisor/**"
+      - ".github/workflows/backend-tests.yml"
   # pull_request.branches filters the BASE branch, so this covers PRs opened
   # from any feature branch into main/V2 without running on every feature push.
   pull_request:
     branches: [main, V2]
+    paths:
+      - "aws-instance-advisor/**"
+      - ".github/workflows/backend-tests.yml"
 
 jobs:
   pytest:

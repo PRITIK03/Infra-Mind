@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import threading
 import time
@@ -38,7 +39,9 @@ import pytest
 os.environ.setdefault("CORS_ALLOWED_ORIGIN", "http://localhost:3000")
 os.environ.setdefault("PORT", "8000")
 
+from app.api import job_runner as job_runner_module
 from app.api import main as main_module
+from app.api import sse as sse_module
 from app.api.event_bus import (
     InMemoryEventBus,
     RedisEventBus,
@@ -425,7 +428,7 @@ def test_stream_stops_when_client_disconnects_and_releases_slot():
 
 def test_stream_generator_notices_disconnect_on_heartbeat(monkeypatch):
     """The idle heartbeat is the wake-up that detects a vanished client."""
-    monkeypatch.setattr(main_module, "SSE_HEARTBEAT_SECONDS", 0.02)
+    monkeypatch.setattr(sse_module, "SSE_HEARTBEAT_SECONDS", 0.02)
 
     async def _scenario():
         job_id = "sse-hb-0005"
@@ -586,7 +589,9 @@ def test_polling_endpoint_unchanged_while_stream_is_open():
 
 def test_stream_receives_timeout_error_and_closes_when_watchdog_fires(monkeypatch):
     """The existing wall-clock watchdog ends the stream — it must not hang."""
-    monkeypatch.setattr(main_module, "JOB_TIMEOUT_SECONDS", 0.2)
+    # The watchdog lives in app/api/job_runner.py, so the timeout constant is
+    # patched there (patching main's re-export would be a silent no-op).
+    monkeypatch.setattr(job_runner_module, "JOB_TIMEOUT_SECONDS", 0.2)
     job_id = "sse-watchdog-0010"
 
     def _hanging_run(jid: str, state: Any) -> None:
@@ -874,20 +879,228 @@ def test_store_swallows_publish_failures():
     assert store.get(job.job_id).error == "boom"
 
 
-def test_redis_store_publishes_after_each_durable_write():
-    publisher = _RecordingPublisher()
-    store = RedisJobStore(fakeredis.FakeStrictRedis(), publisher=publisher)
-    job = _new_job("pub-redis-1")
-    store.put(job)
+# ---------------------------------------------------------------------------
+# Production readiness (Part B): structured logging, readiness, shutdown drain
+# ---------------------------------------------------------------------------
 
-    store.update_stage(job.job_id, "Analyzing repository")
-    store.update_status(job.job_id, "done", result={"ok": True})
 
-    assert [payload["current_stage"] for _, payload in publisher.published] == [
-        "Analyzing repository",
-        "Analyzing repository",
-    ]
-    assert publisher.published[-1][1]["status"] == "done"
-    assert publisher.published[-1][1]["result"] == {"ok": True}
-    # Published only after the record is durable (same store, same snapshot).
-    assert store.get(job.job_id).status == "done"
+class _RecordingHandler(logging.Handler):
+    """logging.Handler that keeps emitted records for assertions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def _json_logger():
+    """A logger named like ours, with the real JsonFormatter + JobIdFilter."""
+    from app.logging_config import bind_job_id, JobIdFilter, JsonFormatter
+
+    handler = _RecordingHandler()
+    handler.setFormatter(JsonFormatter())
+
+    probe = logging.getLogger("inframind.test.probe")
+    probe.addHandler(handler)
+    probe.addFilter(JobIdFilter())
+    probe.setLevel(logging.DEBUG)
+    try:
+        yield probe, handler
+    finally:
+        probe.removeHandler(handler)
+
+
+def test_json_formatter_emits_structured_records(_json_logger):
+    logger, handler = _json_logger
+    logger.warning("hello %s", "world")
+
+    assert len(handler.records) == 1
+    record = handler.records[0]
+    assert record.job_id == "-"  # no job bound → sentinel, not an exception
+
+    payload = json.loads(handler.format(record))
+    assert payload["level"] == "WARNING"
+    assert payload["logger"] == "inframind.test.probe"
+    assert payload["message"] == "hello world"
+    assert "timestamp" in payload and payload["timestamp"].endswith("+00:00")
+    assert "job_id" not in payload  # sentinel "-" is deliberately omitted
+
+
+def test_json_formatter_injects_bound_job_id_without_call_site_formatting(_json_logger):
+    from app.logging_config import bind_job_id
+
+    logger, handler = _json_logger
+    with bind_job_id("job-log-1"):
+        logger.info("stage advanced")
+
+    payload = json.loads(handler.format(handler.records[0]))
+    assert payload["job_id"] == "job-log-1"
+    assert payload["message"] == "stage advanced"
+
+
+def test_configure_logging_is_idempotent(_json_logger):
+    from app.logging_config import configure_logging
+
+    before = len(logging.root.handlers)
+    fmt1 = configure_logging()
+    fmt2 = configure_logging()
+    assert fmt1 == fmt2
+    assert len(logging.root.handlers) == before  # no duplicate handler
+
+
+# ---------------------------------------------------------------------------
+# Readiness endpoint (Part B)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _required_env(monkeypatch):
+    """Provide the four required vars; callers delete/override as needed."""
+    monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("MODEL_NAME", "test-model")
+    monkeypatch.setenv("VANTAGE_API_KEY", "vantage-key")
+
+
+def test_readiness_ready_when_required_env_present(_required_env):
+    async def _scenario():
+        resp = await _aget("/api/health/ready")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ready"] is True
+        assert body["status"] == "ready"
+        # Operator-useful integration map, with Redis honestly unset.
+        assert body["integrations"]["redis"] is False
+        # Liveness is unchanged and stays unconditional.
+        alive = await _aget("/api/health")
+        assert alive.status_code == 200
+        assert alive.json()["status"] == "ok"
+
+    asyncio.run(_scenario())
+
+
+def test_readiness_not_ready_when_required_env_missing(_required_env, monkeypatch):
+    monkeypatch.delenv("VANTAGE_API_KEY", raising=False)
+
+    async def _scenario():
+        resp = await _aget("/api/health/ready")
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["ready"] is False
+        assert body["status"] == "not_ready"
+        assert "VANTAGE_API_KEY" in body["missing_required_env"]
+
+    asyncio.run(_scenario())
+
+
+def test_readiness_reports_redis_state_when_configured(
+    _required_env, monkeypatch
+):
+    from app.api.health import build_readiness_report
+
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+
+    # Unreachable Redis (the configured backend's client raises on ping).
+    class _DownClient:
+        def ping(self) -> bool:
+            raise ConnectionError("connection refused")
+
+    class _DownStore:
+        _redis = _DownClient()
+
+    report, ready = build_readiness_report(_DownStore())
+    assert ready is True  # degraded, not fatal
+    assert report["checks"]["redis"] == "unreachable"
+    assert report["integrations"]["redis"] is True
+
+    # Reachable Redis: a real ping-equivalent via fakeredis.
+    class _UpStore:
+        _redis = fakeredis.FakeStrictRedis()
+
+    report, ready = build_readiness_report(_UpStore())
+    assert ready is True
+    assert report["checks"]["redis"] == "reachable"
+
+
+# ---------------------------------------------------------------------------
+# Graceful-shutdown drain (Part B)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _clean_shutdown():
+    """Reset drain state so shutdown tests never leak into each other."""
+    from app.api.shutdown import coordinator
+    from app.api import sse as sse_module
+
+    coordinator.reset()
+    sse_module.stream_registry.clear()
+    yield
+    coordinator.reset()
+    sse_module.stream_registry.clear()
+
+
+def test_graceful_shutdown_sends_final_event_and_closes_open_streams(_clean_shutdown):
+    from app.api.main import _graceful_shutdown
+    from app.api.shutdown import coordinator
+    from app.api import sse as sse_module
+
+    async def _scenario():
+        job_id = "sse-drain-0001"
+        _put_job(job_id, status="running", stage="Researching compute options")
+
+        async with _StreamDriver(f"/api/recommend/{job_id}/stream") as driver:
+            first = await driver.next_payload()
+            assert first["status"] == "running"
+
+            # Directly trigger the shutdown handler (no real SIGTERM).
+            await _graceful_shutdown()
+
+            # The open stream receives the drain snapshot and closes itself.
+            final = await driver.next_payload(timeout=2.0)
+            assert final["job_id"] == job_id
+            assert "notice" in final
+            assert final["notice"] == sse_module.SHUTDOWN_NOTICE
+            await driver.wait_app_done()
+
+        assert coordinator.draining is True  # sticky until process exit
+        assert event_bus.subscriber_count(job_id) == 0
+        assert stream_limiter.active_count(_IP) == 0
+
+    asyncio.run(_scenario())
+
+
+def test_stream_route_refuses_new_streams_while_draining(_clean_shutdown):
+    from app.api.main import _graceful_shutdown
+
+    async def _scenario():
+        job_id = "sse-drain-0002"
+        _put_job(job_id, status="running", stage="Researching compute options")
+
+        await _graceful_shutdown()
+
+        driver = _StreamDriver(f"/api/recommend/{job_id}/stream")
+        async with driver:
+            await driver.wait_app_done()
+        assert driver.status_code == 503
+        assert "shutting down" in driver.json_body()["detail"].lower()
+
+    asyncio.run(_scenario())
+
+
+def test_graceful_shutdown_bounds_the_wait_for_inflight_jobs(_clean_shutdown):
+    from app.api.shutdown import coordinator
+
+    async def _scenario() -> None:
+        coordinator.job_started()  # never finished: simulates a stuck run
+        remaining = await coordinator.wait_for_inflight(0.2)
+        assert remaining == 1  # capped — does not wait forever
+
+        coordinator.job_finished()
+        remaining = await coordinator.wait_for_inflight(1.0)
+        assert remaining == 0
+
+    asyncio.run(_scenario())

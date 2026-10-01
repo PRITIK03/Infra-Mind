@@ -90,7 +90,7 @@ def test_job_timeout_marks_job_as_error_when_exceeded():
         # Should never reach here in the test, but mark done if it somehow does.
         jobs.update_status(jid, "done")
 
-    with patch("app.api.main.JOB_TIMEOUT_SECONDS", 0.1):
+    with patch("app.api.job_runner.JOB_TIMEOUT_SECONDS", 0.1):
         _submit_with_timeout(_slow_graph, job_id, _make_state())
 
     # Give the watchdog thread time to fire (timeout=0.1s + margin)
@@ -118,7 +118,7 @@ def test_job_timeout_does_not_interfere_with_fast_job():
         jobs.update_status(jid, "done")
 
     # Use a generous timeout — fast job should finish well before it.
-    with patch("app.api.main.JOB_TIMEOUT_SECONDS", 5.0):
+    with patch("app.api.job_runner.JOB_TIMEOUT_SECONDS", 5.0):
         _submit_with_timeout(_fast_graph, job_id, _make_state())
 
     final_status = _wait_for_status(job_id, timeout=3.0)
@@ -144,7 +144,7 @@ def test_job_timeout_error_message_is_user_facing():
     def _hangs(jid, state):
         time.sleep(10.0)
 
-    with patch("app.api.main.JOB_TIMEOUT_SECONDS", 0.1):
+    with patch("app.api.job_runner.JOB_TIMEOUT_SECONDS", 0.1):
         _submit_with_timeout(_hangs, job_id, _make_state())
 
     _wait_for_status(job_id, timeout=3.0)
@@ -172,7 +172,7 @@ def test_job_timeout_does_not_swallow_graph_errors():
     def _raises(jid, state):
         jobs.update_status(jid, "error", error="GraphError: something bad happened")
 
-    with patch("app.api.main.JOB_TIMEOUT_SECONDS", 5.0):
+    with patch("app.api.job_runner.JOB_TIMEOUT_SECONDS", 5.0):
         _submit_with_timeout(_raises, job_id, _make_state())
 
     final_status = _wait_for_status(job_id, timeout=3.0)

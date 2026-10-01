@@ -16,73 +16,87 @@ store's existing state-transition points (publish implemented in
 app/api/job_store.py, transport in app/api/event_bus.py) so there is exactly
 one source of truth for progress.
 
-Thread-pool sizing
-------------------
-We use an explicit ThreadPoolExecutor rather than the default
-asyncio.to_thread executor (which uses ThreadPoolExecutor(max_workers=None),
-defaulting to min(32, os.cpu_count() + 4) — potentially 36 threads on a
-4-core box, or just the OS default on a constrained host).
+Module layout (Part A modularization)
+-------------------------------------
+This module owns the FastAPI app object, middleware, and the route
+definitions only.  Everything else moved to focused modules and is
+re-exported here so existing imports keep working:
 
-On a small Render/Railway/Fly instance (1–2 vCPUs, 512 MB – 1 GB RAM),
-each agent thread holds a live HTTP connection + LangGraph state + LLM
-response buffers. Running many concurrent threads on such a host causes
-memory pressure and scheduler thrashing before the concurrency limit
-matters. JOB_THREAD_POOL_SIZE=8 is deliberately conservative: it
-allows meaningful concurrency (8 simultaneous agent runs) while leaving
-headroom for the FastAPI worker, uvicorn I/O loop, and OS overhead.
+    app/api/schemas.py         request bodies + validators
+    app/api/rate_limit.py      per-IP request + concurrent-stream limiters
+    app/api/runtime.py         the job store + event bus singletons
+    app/api/job_runner.py      background graph runs, watchdog, run records
+    app/api/sse.py             SSE frames, heartbeat, stream generator
+    app/api/error_reporting.py Sentry wiring (optional)
+    app/api/health.py          liveness/readiness checks
 
-If a job hangs (even after the LLM-layer fixes), JOB_TIMEOUT_SECONDS
-ensures the slot is returned within a bounded time.  Adjust both
-constants via environment variables for larger hosts.
-
-Wall-clock job timeout
-----------------------
-Each background job is submitted via executor.submit() and tracked with
-Future.result(timeout=JOB_TIMEOUT_SECONDS).  A concurrent.futures.TimeoutError
-marks the job as "error" with a clear message — this is an independent
-safety net that fires regardless of what's happening inside the graph,
-protecting against any future hang scenario, not just rate-limit loops.
+Thread-pool sizing and the wall-clock job timeout are documented in
+app/api/job_runner.py, where the executor and JOB_* constants now live.
 """
 
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import json
 import logging
 import os
-import threading
 import time
 import uuid
-from collections import deque
-from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel  # noqa: F401  (re-exported for route typing)
 
-from app.agent.graph import build_graph
-from app.agent.state import AgentState
-from app.api.event_bus import (
-    TERMINAL_STATUSES,
-    EventSubscription,
-    JobEventBus,
-    build_event_bus,
+from app.api.error_reporting import (
+    capture_exception as _capture_exception,
+    capture_message as _capture_message,
+    init_sentry,
+)
+from app.api.health import build_readiness_report
+from app.api.job_runner import (
+    JOB_THREAD_POOL_SIZE,  # noqa: F401  (re-exported; see module docstring)
+    JOB_TIMEOUT_SECONDS,  # noqa: F401  (re-exported; patched by tests)
+    empty_state as _empty_state,
+    graph_loop_sync as _graph_loop_sync,
+    resume_with_answer_sync as _resume_with_answer_sync,
+    submit_with_timeout as _submit_with_timeout,
 )
 from app.api.job_store import (
+    FollowupExchange,  # noqa: F401  (re-exported convenience alias)
     Job,
-    JobStatus,
-    JobStoreBackend,
-    build_job_store,
+    JobStatus,  # noqa: F401  (kept for callers/annotations that import it here)
+    JobStoreBackend,  # noqa: F401
     job_snapshot_from_job,
 )
-from app.api.jobs import label_for_node
+from app.api.rate_limit import (
+    RATE_LIMIT_MAX_REQUESTS,  # noqa: F401  (re-exported)
+    RATE_LIMIT_WINDOW_SECONDS,  # noqa: F401  (re-exported)
+    client_id as _client_id,
+    recommend_rate_limiter,
+    stream_limiter,
+)
+from app.api.runtime import event_bus, jobs
+from app.api.schemas import AnswerRequest, FollowupRequest, RecommendRequest
+from app.api.sse import (
+    SSE_HEARTBEAT_SECONDS,  # noqa: F401  (re-exported; patched by tests)
+    SSE_MEDIA_TYPE,
+    sse_event_stream as _sse_event_stream,
+)
+from app.api.shutdown import (
+    MAX_SHUTDOWN_GRACE_SECONDS,
+    coordinator as shutdown_coordinator,
+    drain_open_streams,
+)
 from app.config import get_api_settings
-from app.models.schemas import SystemDesignRecommendation, UserRequirements
+from app.logging_config import bind_job_id, configure_logging
 
 logger = logging.getLogger(__name__)
+
+# One structured-logging install for the whole process.  LOG_FORMAT=text
+# gives the human-readable variant for local development.
+configure_logging()
 
 # ---------------------------------------------------------------------------
 # Concurrency + timeout constants (overridable via env for larger hosts)
@@ -102,51 +116,8 @@ JOB_TIMEOUT_SECONDS: float = float(os.getenv("JOB_TIMEOUT_SECONDS", "600"))
 # ---------------------------------------------------------------------------
 
 
-class RecommendRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=10_000)
-    consensus: bool = Field(
-        default=False,
-        description=(
-            "Opt-in multi-model consensus.  When true, the final holistic "
-            "recommendation is generated once more against a second model "
-            "(CONSENSUS_MODEL, else the first LLM_FALLBACK_MODELS entry) and "
-            "compared deterministically — at the cost of one extra full LLM "
-            "call.  Defaults to False: consensus never runs unless explicitly "
-            "requested."
-        ),
-    )
-
-    @field_validator("message")
-    @classmethod
-    def validate_message(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("message must contain non-whitespace text")
-        return value
-
-
-class AnswerRequest(BaseModel):
-    answer: str = Field(..., min_length=1, max_length=2_000)
-
-    @field_validator("answer")
-    @classmethod
-    def validate_answer(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("answer must contain non-whitespace text")
-        return value
-
-
-class FollowupRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=2_000)
-
-    @field_validator("question")
-    @classmethod
-    def validate_question(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("question must contain non-whitespace text")
-        return value
+# Request bodies live in app/api/schemas.py (imported above) — see that module
+# for the field constraints and the whitespace-only validation rules.
 
 
 # ---------------------------------------------------------------------------
@@ -159,97 +130,55 @@ class FollowupRequest(BaseModel):
 # exactly as it did before.
 # ---------------------------------------------------------------------------
 
-_sentry_enabled: bool = False
-
-
-def init_sentry(dsn: str | None = None, *, traces_sample_rate: float | None = None) -> bool:
-    """Initialize Sentry error monitoring if a DSN is configured.
-
-    Returns True when Sentry was initialized, False when it was skipped.
-    Skipping is the normal case (no SENTRY_DSN configured) and is never an
-    error — matching the Tavily / GitHub-MCP / DATABASE_URL / REDIS_URL
-    graceful-optional pattern.
-
-    The import is deferred so a deployment without sentry-sdk installed
-    still starts up cleanly.
-    """
-    global _sentry_enabled
-
-    from app.config import get_sentry_settings
-
-    settings = get_sentry_settings()
-    if dsn is None:
-        dsn = settings.sentry_dsn
-    if not dsn:
-        # No DSN configured — leave Sentry disabled.
-        _sentry_enabled = False
-        return False
-
-    if traces_sample_rate is None:
-        traces_sample_rate = settings.traces_sample_rate
-
-    try:
-        import sentry_sdk
-        from sentry_sdk.integrations.fastapi import FastApiIntegration
-
-        sentry_sdk.init(
-            dsn=dsn,
-            integrations=[FastApiIntegration()],
-            # Error monitoring only by default; tracing is opt-in via
-            # SENTRY_TRACES_SAMPLE_RATE to avoid burning free-tier quota.
-            traces_sample_rate=traces_sample_rate,
-            send_default_pii=False,
-        )
-        _sentry_enabled = True
-        logger.info("Error monitoring: Sentry initialized")
-        return True
-    except Exception as exc:  # pragma: no cover - depends on local env
-        _sentry_enabled = False
-        logger.warning(
-            "SENTRY_DSN is configured but Sentry could not be initialized (%s); "
-            "continuing without error monitoring.",
-            exc,
-        )
-        return False
-
-
-def _capture_exception(exc: BaseException) -> None:
-    """Report an already-handled exception to Sentry, if it's enabled.
-
-    Used for errors this module catches deliberately (graph failures, job
-    timeouts) — those never propagate to FastAPI, so the automatic
-    integration cannot see them. No-ops when Sentry is unconfigured.
-    """
-    if not _sentry_enabled:
-        return
-    try:
-        import sentry_sdk
-
-        sentry_sdk.capture_exception(exc)
-    except Exception:  # pragma: no cover - observability must never crash
-        pass
-
-
-def _capture_message(message: str) -> None:
-    """Report a non-exception job failure (e.g. wall-clock timeout) to Sentry.
-
-    No-ops when Sentry is unconfigured, same as _capture_exception.
-    """
-    if not _sentry_enabled:
-        return
-    try:
-        import sentry_sdk
-
-        sentry_sdk.capture_message(message, level="error")
-    except Exception:  # pragma: no cover - observability must never crash
-        pass
-
-
+# Error monitoring lives in app/api/error_reporting.py.  Initialization must
+# still run here — before ``FastAPI(...)`` is constructed — because Sentry
+# patches the framework at init time.  No-op when SENTRY_DSN is unset.
 init_sentry()
 
 api_settings = get_api_settings()
 
 app = FastAPI(title="AWS Instance Advisor API", version="1.0.0")
+
+
+async def _graceful_shutdown() -> None:
+    """Coordinate process shutdown: drain streams, bound in-flight jobs.
+
+    Invoked from the FastAPI lifespan handler below on SIGTERM.  Kept as a
+    named function (rather than inline) so tests can trigger the full
+    sequence directly without sending a real process signal:
+
+    1. refuse new SSE connections (``stream_job_progress`` returns 503),
+    2. publish one final snapshot to every open stream (each stream closes
+       itself after yielding it),
+    3. wait up to MAX_SHUTDOWN_GRACE_SECONDS for in-flight agent runs to
+       finish, then proceed regardless — the cap is the point.
+    """
+    shutdown_coordinator.begin_draining()
+    try:
+        # drain_open_streams can block on a Redis round-trip — keep it off the
+        # event loop, same discipline as the store reads in the routes.
+        drained = await asyncio.to_thread(drain_open_streams)
+    except Exception as exc:  # pragma: no cover - depends on transport
+        drained = 0
+        logger.warning("Shutdown: stream drain failed (%s)", exc)
+    remaining = await shutdown_coordinator.wait_for_inflight(MAX_SHUTDOWN_GRACE_SECONDS)
+    if remaining:
+        logger.warning(
+            "Shutdown: proceeding with %d in-flight job(s) after the grace period",
+            remaining,
+        )
+    else:
+        logger.info("Shutdown: drained %d stream(s), no in-flight jobs", drained)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # noqa: ARG001
+    """Startup yields immediately; shutdown drains via _graceful_shutdown."""
+    yield
+    await _graceful_shutdown()
+
+
+app.router.lifespan_context = _lifespan
 
 app.add_middleware(
     CORSMiddleware,
@@ -303,444 +232,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-# Pluggable publish/subscribe backend for the SSE progress stream
-# (app/api/event_bus.py).  Selected from the same REDIS_URL as the job store
-# and passed to the store so every state transition is published from the
-# existing update points — no parallel event system.
-event_bus: JobEventBus = build_event_bus()
-jobs: JobStoreBackend = build_job_store(publisher=event_bus)
-
-
-def _client_id(request: Request) -> str:
-    """Client identity used by the rate limiter and the stream limiter.
-
-    The single source of truth for IP extraction: the streaming endpoint
-    reuses this rather than reimplementing proxy/None handling.
-    """
-    return request.client.host if request.client else "unknown"
-
-
-class InMemoryRateLimiter:
-    """Small process-local sliding-window limiter for expensive public requests."""
-
-    def __init__(self, max_requests: int, window_seconds: float) -> None:
-        self.max_requests = max(1, max_requests)
-        self.window_seconds = max(1.0, window_seconds)
-        self._requests: dict[str, deque[float]] = {}
-        self._lock = threading.Lock()
-
-    def allow(self, client_id: str, now: float | None = None) -> tuple[bool, int]:
-        current = time.monotonic() if now is None else now
-        with self._lock:
-            timestamps = self._requests.setdefault(client_id, deque())
-            cutoff = current - self.window_seconds
-            while timestamps and timestamps[0] <= cutoff:
-                timestamps.popleft()
-            if len(timestamps) >= self.max_requests:
-                retry_after = max(1, int(self.window_seconds - (current - timestamps[0])))
-                return False, retry_after
-            timestamps.append(current)
-            return True, 0
-
-    def clear(self) -> None:
-        """Clear state for tests and controlled in-process maintenance."""
-        with self._lock:
-            self._requests.clear()
-
-
-RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "5"))
-RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
-recommend_rate_limiter = InMemoryRateLimiter(
-    RATE_LIMIT_MAX_REQUESTS,
-    RATE_LIMIT_WINDOW_SECONDS,
-)
-
-# Idle SSE streams wake up every this many seconds to (a) emit a comment
-# heartbeat so proxies don't drop a quiet connection and (b) notice a client
-# that has gone away.  15s is comfortably inside typical proxy idle timeouts.
-SSE_HEARTBEAT_SECONDS: float = float(os.getenv("SSE_HEARTBEAT_SECONDS", "15"))
-
-# Cap on *concurrently open* progress streams per client IP.
-MAX_CONCURRENT_STREAMS_PER_IP: int = int(os.getenv("MAX_CONCURRENT_STREAMS_PER_IP", "5"))
-
-
-class InMemoryConcurrentStreamLimiter:
-    """Bounds concurrently open SSE streams per client IP.
-
-    A long-lived streaming connection is architecturally different from
-    repeated quick REST calls, so the requests-per-minute limiter is
-    deliberately NOT applied to the stream endpoint: a sliding request
-    window would either reject a legitimate second tab (the connection
-    itself costs one "request" that stays open) or, if incremented once on
-    connect, would never reflect that the connection is still held.
-
-    Instead this counts *open* streams and releases a slot the moment the
-    generator finishes — on the terminal event, on client disconnect, or on
-    task cancellation.  Kept small (default 5) because each open stream
-    holds a subscription and an event loop task.
-    """
-
-    def __init__(self, max_streams: int) -> None:
-        self.max_streams = max(1, max_streams)
-        self._active: dict[str, int] = {}
-        self._lock = threading.Lock()
-
-    def acquire(self, client_id: str) -> bool:
-        """Reserve a slot; returns False when the client is at the cap."""
-        with self._lock:
-            current = self._active.get(client_id, 0)
-            if current >= self.max_streams:
-                return False
-            self._active[client_id] = current + 1
-            return True
-
-    def release(self, client_id: str) -> None:
-        """Return a slot (idempotent — safe to call on paths that never acquired)."""
-        with self._lock:
-            current = self._active.get(client_id, 0)
-            if current <= 1:
-                self._active.pop(client_id, None)
-            else:
-                self._active[client_id] = current - 1
-
-    def active_count(self, client_id: str) -> int:
-        with self._lock:
-            return self._active.get(client_id, 0)
-
-    def clear(self) -> None:
-        """Clear state for tests and controlled in-process maintenance."""
-        with self._lock:
-            self._active.clear()
-
-
-stream_limiter = InMemoryConcurrentStreamLimiter(MAX_CONCURRENT_STREAMS_PER_IP)
-
-# Single shared executor for all background agent runs.
-# Defined at module level so it is shared across requests and can be
-# cleanly shut down on process exit.
-_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=JOB_THREAD_POOL_SIZE,
-    thread_name_prefix="agent-job",
-)
-
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Helpers
 # ---------------------------------------------------------------------------
-
-
-def _empty_state() -> AgentState:
-    return {
-        "requirements": UserRequirements(),
-        "latest_user_message": None,
-        "next_question": None,
-        "pending_field": None,
-        "repo_analysis": None,
-        "repo_analysis_note": None,
-        "technical_needs": None,
-        "instance_candidates": None,
-        "database_candidates": None,
-        "cache_candidates": None,
-        "recommendation": None,
-        "system_design_recommendation": None,
-        "terraform_files": None,
-        "consensus_requested": False,
-    }
-
-
-def _run_graph_with_streaming(
-    job_id: str,
-    state: AgentState,
-    collecting: bool = False,
-) -> AgentState:
-    """
-    Run one graph pass using .stream() so we surface per-node stage
-    labels to the job. Returns the final state after the full pass.
-
-    Sets the thread-local retry context var so that invoke_structured
-    calls made from any node in this pass automatically update
-    job.retry_info without requiring any changes to node signatures.
-    The context var is cleared after the pass completes.
-    """
-    from app.llm.retry import _retry_context
-
-    def _retry_cb(attempt: int, max_attempts: int) -> None:
-        jobs.update_retry_info(
-            job_id,
-            f"Retrying after rate limit (attempt {attempt} of {max_attempts})",
-        )
-
-    def _clear_retry_cb(attempt: int, max_attempts: int) -> None:  # noqa: ARG001
-        # Sentinel: called with attempt=0 to signal "clear".
-        jobs.update_retry_info(job_id, None)
-
-    token = _retry_context.set(_retry_cb)
-    try:
-        graph = build_graph()
-        final_state: AgentState = state
-
-        for chunk in graph.stream(state):
-            node_name = next(iter(chunk.keys()))
-            stage_label = label_for_node(node_name)
-            jobs.update_stage(job_id, stage_label)
-            final_state = chunk[node_name]
-            jobs.update_state(job_id, final_state)
-            # Clear retry_info after each node completes successfully.
-            jobs.update_retry_info(job_id, None)
-    finally:
-        _retry_context.reset(token)
-
-    return final_state
-
-
-def _graph_loop_sync(job_id: str, initial_state: AgentState) -> None:
-    """
-    Synchronous (thread-bound) driver that mirrors the CLI loop in
-    app/main.py but writes progress into the shared JobStore.
-
-    Runs passes of graph.stream(state) until either a final
-    recommendation is produced or the agent asks a follow-up question.
-    On any unhandled exception the job is marked errored.
-
-    This function is submitted to _executor and monitored by
-    _submit_with_timeout, which enforces JOB_TIMEOUT_SECONDS as an
-    independent wall-clock safety net.
-    """
-    state = initial_state
-    job_start = time.monotonic()
-    try:
-        while True:
-            state = _run_graph_with_streaming(job_id, state, collecting=True)
-
-            if (
-                state.get("system_design_recommendation") is not None
-                or state.get("recommendation") is not None
-            ):
-                final = _serialize_result(state)
-                jobs.update_status(job_id, "done", result=final)
-                _record_completed_run(job_id, state, job_start)
-                return
-
-            if state.get("next_question"):
-                jobs.update_status(
-                    job_id,
-                    "awaiting_input",
-                    next_question=state["next_question"],
-                )
-                return
-
-            jobs.update_status(
-                job_id,
-                "error",
-                error="No recommendation or follow-up question was produced.",
-            )
-            return
-
-    except Exception as exc:
-        jobs.update_status(job_id, "error", error=f"{type(exc).__name__}: {exc}")
-        _capture_exception(exc)
-
-
-def _resume_with_answer_sync(job_id: str, answer: str) -> None:
-    """Resume a job in awaiting_input status after the user replies."""
-    job = jobs.get(job_id)
-    if job is None:
-        return
-    state = job.state
-    state["latest_user_message"] = answer
-    jobs.update_status(job_id, "running")
-    job_start = time.monotonic()
-    try:
-        while True:
-            state = _run_graph_with_streaming(job_id, state, collecting=True)
-
-            if (
-                state.get("system_design_recommendation") is not None
-                or state.get("recommendation") is not None
-            ):
-                final = _serialize_result(state)
-                jobs.update_status(job_id, "done", result=final)
-                _record_completed_run(job_id, state, job_start)
-                return
-
-            if state.get("next_question"):
-                jobs.update_status(
-                    job_id,
-                    "awaiting_input",
-                    next_question=state["next_question"],
-                )
-                return
-
-            jobs.update_status(
-                job_id,
-                "error",
-                error="No recommendation or follow-up question was produced.",
-            )
-            return
-
-    except Exception as exc:
-        jobs.update_status(job_id, "error", error=f"{type(exc).__name__}: {exc}")
-        _capture_exception(exc)
-
-
-def _submit_with_timeout(fn, *args) -> None:
-    """
-    Submit *fn(*args)* to the shared executor and watch it with a
-    daemon thread that enforces JOB_TIMEOUT_SECONDS.
-
-    If the future does not complete in time, the job is marked as
-    "error" with a clear timeout message.  The underlying thread
-    continues running until it naturally exits (Python threads cannot
-    be forcibly killed), but the job slot is freed from the caller's
-    perspective and the executor queue is unblocked.
-
-    The job_id is always the first positional argument by convention.
-    """
-    job_id: str = args[0]
-    future = _executor.submit(fn, *args)
-
-    def _watchdog() -> None:
-        try:
-            future.result(timeout=JOB_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError:
-            timeout_message = (
-                f"Job timed out after {JOB_TIMEOUT_SECONDS:.0f}s — "
-                "the agent took too long to respond. Please try again."
-            )
-            jobs.update_status(job_id, "error", error=timeout_message)
-            # Job timeouts are swallowed here (the job is marked errored, no
-            # exception propagates to FastAPI), so report explicitly.
-            _capture_message(f"Job {job_id} timed out: {timeout_message}")
-        except Exception:
-            # The underlying fn already wrote its own error via jobs.update_status;
-            # nothing to do here — exceptions from the future are already handled
-            # inside _graph_loop_sync / _resume_with_answer_sync.
-            pass
-
-    import threading
-    threading.Thread(target=_watchdog, daemon=True, name=f"watchdog-{job_id}").start()
-
-
-def _record_completed_run(
-    job_id: str,
-    state: AgentState,
-    job_start: float,
-) -> None:
-    """
-    Fire-and-forget observability record for a successfully completed job.
-    Extracts grounding status and cost from the final state and calls
-    persist_run, which logs to stdout and optionally writes to the DB.
-    """
-    try:
-        from app.observability import persist_run
-        from app.config import get_llm_settings
-
-        total_latency_s = time.monotonic() - job_start
-
-        # Model name from config — this is the model that produced the run.
-        try:
-            model_used = get_llm_settings().model_name
-        except Exception:
-            model_used = None
-
-        # Retry count: read from the job's current retry_info string.
-        # retry_info is None (success) or a string like "Retrying … (attempt N of M)".
-        # We track the highest attempt number seen; for a clean run it's 0.
-        job = jobs.get(job_id)
-        retry_count = 0
-        if job is not None and job.retry_info:
-            import re
-            m = re.search(r"attempt (\d+)", job.retry_info)
-            if m:
-                retry_count = int(m.group(1))
-
-        # Grounding result and cost from the recommendation.
-        grounding_passed: bool | None = None
-        cost_low: float | None = None
-        cost_high: float | None = None
-
-        sdr = state.get("system_design_recommendation")
-        if sdr is not None:
-            if hasattr(sdr, "grounding_passed"):
-                grounding_passed = sdr.grounding_passed
-            cost = getattr(sdr, "estimated_cost", None)
-            if cost is not None:
-                cost_low = getattr(cost, "total_monthly_low", None)
-                cost_high = getattr(cost, "total_monthly_high", None)
-
-        recommendation_snapshot = None
-        if sdr is not None:
-            cache_engine = getattr(getattr(sdr, "cache", None), "engine", None)
-            technical_needs = state.get("technical_needs")
-            recommendation_snapshot = {
-                "compute_instance": getattr(getattr(sdr, "compute", None), "recommended_instance", None),
-                "compute_monthly": getattr(cost, "compute_monthly_low", None) if cost is not None else None,
-                "database_instance": getattr(getattr(sdr, "database", None), "recommended_instance", None),
-                "database_engine": getattr(getattr(sdr, "database", None), "engine_suggestion", None),
-                "database_monthly": getattr(cost, "database_monthly", None) if cost is not None else None,
-                "cache_instance": getattr(getattr(sdr, "cache", None), "recommended_instance", None),
-                "cache_engine": getattr(cache_engine, "value", cache_engine),
-                "cache_monthly": getattr(cost, "cache_monthly", None) if cost is not None else None,
-                "load_balancer_type": getattr(getattr(sdr, "load_balancer", None), "load_balancer_type", None),
-                "min_instances": getattr(technical_needs, "min_instances", None),
-                "max_instances": getattr(technical_needs, "max_instances", None),
-            }
-
-        persist_run(
-            job_id=job_id,
-            total_latency_s=total_latency_s,
-            model_used=model_used,
-            retry_count=retry_count,
-            grounding_passed=grounding_passed,
-            estimated_cost_low=cost_low,
-            estimated_cost_high=cost_high,
-            recommendation_snapshot=recommendation_snapshot,
-        )
-    except Exception as exc:
-        # Observability must never crash the response path.
-        import logging
-        logging.getLogger(__name__).warning(
-            "Observability record failed for job %s: %s", job_id, exc
-        )
-
-
-def _serialize_result(state: AgentState) -> dict[str, Any]:
-    rec = state.get("system_design_recommendation")
-    v1_rec = state.get("recommendation")
-    tf_files = state.get("terraform_files")
-    tn = state.get("technical_needs")
-    requirements = state.get("requirements")
-    candidates = state.get("instance_candidates")
-    result: dict[str, Any] = {}
-    if rec is not None:
-        if isinstance(rec, SystemDesignRecommendation):
-            result["system_design_recommendation"] = rec.model_dump(mode="json")
-        else:
-            result["system_design_recommendation"] = rec
-    if v1_rec is not None:
-        if hasattr(v1_rec, "model_dump"):
-            result["recommendation"] = v1_rec.model_dump(mode="json")
-        else:
-            result["recommendation"] = v1_rec
-    if tf_files is not None:
-        result["terraform_files"] = tf_files
-    # Include technical_needs and instance_candidates so the frontend can
-    # render ScalingRangeBar and CandidateLandscape from real data.
-    if tn is not None:
-        if hasattr(tn, "model_dump"):
-            result["technical_needs"] = tn.model_dump(mode="json")
-        else:
-            result["technical_needs"] = tn
-    if requirements is not None:
-        if hasattr(requirements, "model_dump"):
-            result["user_requirements"] = requirements.model_dump(mode="json")
-        else:
-            result["user_requirements"] = requirements
-    if candidates:
-        result["instance_candidates"] = [
-            c.model_dump(mode="json") if hasattr(c, "model_dump") else c
-            for c in candidates
-        ]
-    return result
 
 
 def _job_response(job: Job) -> dict[str, Any]:
@@ -756,6 +250,9 @@ def _job_response(job: Job) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # Routes
+#
+# Request bodies: app/api/schemas.py · rate limiting: app/api/rate_limit.py ·
+# SSE frames/generator: app/api/sse.py · job execution: app/api/job_runner.py
 # ---------------------------------------------------------------------------
 
 
@@ -763,6 +260,19 @@ def _job_response(job: Job) -> dict[str, Any]:
 def health() -> dict[str, Any]:
     """Liveness probe. No LLM or live-data calls."""
     return {"status": "ok", "time": time.time()}
+
+
+@app.get("/api/health/ready")
+async def readiness() -> JSONResponse:
+    """Readiness probe: is this instance configured to serve traffic?
+
+    Cheap and local-only by design (see app/api/health.py): no model calls,
+    no live-data fetches, just environment presence plus one Redis PING at
+    most — safe for a load balancer or monitor to hit every few seconds.
+    Returns 200 when the required config is present, 503 otherwise.
+    """
+    report, ready = await asyncio.to_thread(build_readiness_report)
+    return JSONResponse(status_code=200 if ready else 503, content=report)
 
 
 # Simple in-process cache so the landing page stat readout doesn't hammer
@@ -857,82 +367,12 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Real-time progress streaming (Server-Sent Events)
 #
-# Additive: the polling endpoint above keeps working unchanged.  This pushes
-# the very same snapshots as they happen, from the state transitions that
-# already exist (JobStoreBackend.update_stage / update_status /
-# update_retry_info) — there is no parallel event system.
+# Frames + generator: app/api/sse.py.  Additive: the polling endpoint above
+# keeps working unchanged, and this route pushes the very same snapshots as
+# they happen, from the state transitions that already exist
+# (JobStoreBackend.update_stage / update_status / update_retry_info) — there
+# is no parallel event system.
 # ---------------------------------------------------------------------------
-
-SSE_MEDIA_TYPE = "text/event-stream"
-_HEARTBEAT_FRAME = ": keep-alive\n\n"
-
-
-def _sse_frame(payload: dict[str, Any]) -> str:
-    """Render one SSE data frame.
-
-    ``json.dumps`` escapes newlines inside strings, so a payload is always a
-    single ``data:`` line.  That matters: an unescaped newline would end the
-    event early in every SSE client.
-    """
-    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
-
-
-async def _sse_event_stream(
-    request: Request,
-    job_id: str,
-    subscription: EventSubscription,
-    client_id: str,
-) -> AsyncIterator[str]:
-    """Generator behind the SSE endpoint: current state, then live updates.
-
-    Owns the subscription and the concurrency slot and releases both in
-    ``finally``, which runs on the terminal event, on a detected client
-    disconnect, and on task cancellation (how an ASGI server tears a stream
-    down when the browser goes away).  That last case is the classic SSE
-    leak — without it the backend keeps producing frames for nobody.
-    """
-    try:
-        # The subscription is already active, so a transition landing between
-        # this read and the first yield is queued rather than lost.
-        job = await asyncio.to_thread(jobs.get, job_id)
-        if job is None:
-            # Only reachable if the job vanished between the route's 404
-            # check and here (e.g. Redis TTL expiry).  Terminate, don't hang.
-            yield _sse_frame(
-                {
-                    "job_id": job_id,
-                    "status": "error",
-                    "current_stage": "Unknown",
-                    "error": f"Job {job_id} not found",
-                }
-            )
-            return
-
-        last_payload = _job_response(job)
-        yield _sse_frame(last_payload)
-        if last_payload.get("status") in TERMINAL_STATUSES:
-            # Connected after the job finished: that snapshot *is* the final
-            # event, so there is nothing left to wait for.
-            return
-
-        while True:
-            event = await subscription.next_event(timeout=SSE_HEARTBEAT_SECONDS)
-            if event is None:
-                # Idle window: emit a heartbeat and use the wake-up to check
-                # whether the client is still there.
-                if subscription.closed or await request.is_disconnected():
-                    break
-                yield _HEARTBEAT_FRAME
-                continue
-            if event == last_payload:
-                continue  # duplicate snapshot — nothing new to report
-            last_payload = event
-            yield _sse_frame(event)
-            if event.get("status") in TERMINAL_STATUSES:
-                break  # terminal: close server-side, no further events exist
-    finally:
-        subscription.close()
-        stream_limiter.release(client_id)
 
 
 @app.get("/api/recommend/{job_id}/stream")
@@ -961,6 +401,15 @@ async def stream_job_progress(request: Request, job_id: str) -> StreamingRespons
     job = await asyncio.to_thread(jobs.get, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # While the process is draining for shutdown, refuse new streams — the
+    # client falls back to polling, which needs no long-lived connection.
+    if shutdown_coordinator.draining:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is shutting down; please reconnect or poll.",
+            headers={"Retry-After": "2"},
+        )
 
     client_id = _client_id(request)
     if not stream_limiter.acquire(client_id):

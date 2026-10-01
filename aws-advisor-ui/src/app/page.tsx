@@ -3,11 +3,23 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useJobPoller } from "@/hooks/useJobPoller";
 import { StageProgress } from "@/components/StageProgress";
 import { AwaitingInputPanel } from "@/components/AwaitingInputPanel";
-import { ResultReport } from "@/components/ResultReport";
-import { TerraformViewer } from "@/components/TerraformViewer";
+// Code-split like TerraformViewer: the full report (and everything it pulls
+// in) only exists once a run completes, never on the initial landing view.
+const ResultReport = dynamic(
+  () => import("@/components/ResultReport").then((m) => m.ResultReport),
+  { ssr: false },
+);
+// Code-split: the viewer pulls in react-syntax-highlighter (Prism/refractor)
+// and only mounts when a run actually produced Terraform files — keep it
+// out of the initial landing-page bundle.
+const TerraformViewer = dynamic(
+  () => import("@/components/TerraformViewer").then((m) => m.TerraformViewer),
+  { ssr: false },
+);
 import { FollowupPanel } from "@/components/FollowupPanel";
 import { ErrorPanel } from "@/components/ErrorPanel";
 import { LiveStatsReadout } from "@/components/LiveStatsReadout";

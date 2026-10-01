@@ -27,7 +27,6 @@ export function ExportPdfButton({ title }: Props = {}) {
     <button
       type="button"
       onClick={handlePrint}
-      aria-label="Export report as PDF"
       className={[
         "border border-border-subtle px-3 py-1.5",
         "font-mono text-xs text-ink-dim uppercase tracking-wider",

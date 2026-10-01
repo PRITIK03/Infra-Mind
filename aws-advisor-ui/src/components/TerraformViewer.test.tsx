@@ -48,7 +48,7 @@ describe("TerraformViewer", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     render(<TerraformViewer files={files} />);
 
-    await user.click(screen.getByRole("button", { name: "Download Terraform files as a zip" }));
+    await user.click(screen.getByRole("button", { name: /download \.zip/i }));
 
     await waitFor(async () => {
       expect(downloadedBlob).toBeDefined();

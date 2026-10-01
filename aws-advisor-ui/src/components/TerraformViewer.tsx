@@ -126,7 +126,10 @@ export function TerraformViewer({ files, recommendation }: Props) {
           type="button"
           onClick={handleDownload}
           disabled={downloading}
-          aria-label="Download Terraform files as a zip"
+          // No aria-label: the visible text ("↓ download .zip") is the
+          // accessible name, which keeps axe's label-content-name-mismatch
+          // rule satisfied (a label must contain the visible text tokens in
+          // order — "...as .zip" broke that).
           className={[
             "flex items-center gap-1.5 border border-border-subtle px-3 py-1",
             "font-mono text-xs text-ink-muted uppercase tracking-wider",
@@ -165,8 +168,11 @@ export function TerraformViewer({ files, recommendation }: Props) {
         </div>
       )}
 
-      {/* File tabs */}
-      <div className="flex border-b border-border-subtle" role="tablist" aria-label="Terraform files">
+      {/* File tabs — the tablist must own its tabs (axe aria-required-children),
+          so the flex container that carries the border is a plain div and the
+          tablist wraps the buttons directly. */}
+      <div className="flex border-b border-border-subtle">
+        <div role="tablist" aria-label="Terraform files" className="flex">
         {fileNames.map((name) => (
           <button
             key={name}
@@ -184,7 +190,8 @@ export function TerraformViewer({ files, recommendation }: Props) {
             {name}
           </button>
         ))}
-        {/* Copy button — right-aligned */}
+        </div>
+        {/* Copy button — right-aligned, outside the tablist element */}
         <div className="ml-auto flex items-center pr-1">
           <button
             onClick={handleCopy}

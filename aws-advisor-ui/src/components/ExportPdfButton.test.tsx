@@ -7,7 +7,7 @@ describe("ExportPdfButton", () => {
     const printSpy = vi.spyOn(window, "print").mockImplementation(() => {});
     render(<ExportPdfButton />);
 
-    const button = screen.getByRole("button", { name: /export report as pdf/i });
+    const button = screen.getByRole("button", { name: /export as pdf/i });
     expect(button).toBeInTheDocument();
     expect(button).toHaveTextContent("export as pdf");
 

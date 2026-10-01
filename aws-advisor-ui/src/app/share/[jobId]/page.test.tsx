@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { JobResponse, SystemDesignRecommendation } from "@/lib/types";
 import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
-import SharePage from "@/app/share/[jobId]/page";
+import ShareView from "@/app/share/[jobId]/ShareView";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -13,10 +13,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     shareUrl: (jobId: string) => `http://localhost:3000/share/${jobId}`,
   };
 });
-
-vi.mock("next/navigation", () => ({
-  useParams: () => ({ jobId: "shared-job-1" }),
-}));
 
 const { fetchSharedJob } = await import("@/lib/api");
 const mockedFetchSharedJob = vi.mocked(fetchSharedJob);
@@ -72,7 +68,7 @@ describe("SharePage", () => {
   it("renders a read-only result for a done job — no follow-up, no new analysis", async () => {
     mockedFetchSharedJob.mockResolvedValue(doneJob);
 
-    render(<SharePage />);
+    render(<ShareView jobId="shared-job-1" />);
 
     await waitFor(() => {
       expect(screen.getByText("Viewing a shared recommendation")).toBeInTheDocument();
@@ -88,7 +84,7 @@ describe("SharePage", () => {
   it("shows the honest not-available state when the link is invalid", async () => {
     mockedFetchSharedJob.mockRejectedValue(new Error("Shared result not found"));
 
-    render(<SharePage />);
+    render(<ShareView jobId="no-such-job" />);
 
     await waitFor(() => {
       expect(screen.getByText("recommendation unavailable")).toBeInTheDocument();

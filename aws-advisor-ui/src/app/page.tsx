@@ -288,6 +288,12 @@ export default function Home() {
               >
                 run history
               </Link>
+              <Link
+                href="/how-it-works"
+                className="font-mono text-xs text-ink-dim hover:text-amber hover:bg-white/[0.03] transition-colors px-2 py-1"
+              >
+                how it works
+              </Link>
             </nav>
           </div>
           {process.env.NEXT_PUBLIC_API_URL && (

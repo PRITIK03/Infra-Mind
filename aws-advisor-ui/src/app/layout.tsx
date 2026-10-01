@@ -17,9 +17,30 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
+  // Resolves the relative /opengraph-image URLs above into absolute ones for
+  // crawlers; set NEXT_PUBLIC_SITE_URL to the deployment origin in production
+  // (falls back to localhost for local dev, matching Next's default).
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"),
   title: "AWS Instance Advisor",
   description:
     "Describe your workload. Get a vetted compute, database, cache, and load-balancer recommendation — plus ready-to-apply Terraform.",
+  // Static OG/Twitter metadata for the landing page and the results view it
+  // renders.  The image comes from src/app/opengraph-image.tsx (file
+  // convention — Next links it automatically); the /share/[jobId] route
+  // overrides all of this with real job data.
+  openGraph: {
+    siteName: "AWS Instance Advisor",
+    title: "AWS Instance Advisor",
+    description:
+      "Describe your workload. Get a vetted compute, database, cache, and load-balancer recommendation — plus ready-to-apply Terraform.",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "AWS Instance Advisor",
+    description:
+      "Describe your workload. Get a vetted compute, database, cache, and load-balancer recommendation — plus ready-to-apply Terraform.",
+  },
   robots: "noindex",
 };
 

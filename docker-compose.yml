@@ -1,0 +1,44 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: aws-instance-advisor-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./aws-instance-advisor
+      dockerfile: Dockerfile
+    container_name: aws-instance-advisor-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=8000
+      - CORS_ALLOWED_ORIGIN=http://localhost:3000
+      - API_KEY=${API_KEY:-dummy-key}
+      - BASE_URL=${BASE_URL:-https://openrouter.ai/api/v1}
+      - MODEL_NAME=${MODEL_NAME:-openrouter/free}
+      - VANTAGE_API_KEY=${VANTAGE_API_KEY:-dummy-vantage-key}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - GITHUB_MCP_TOKEN=${GITHUB_MCP_TOKEN:-}
+      - CONSENSUS_MODEL=${CONSENSUS_MODEL:-}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+    env_file:
+      - path: ./aws-instance-advisor/.env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis_data:

@@ -181,6 +181,33 @@ npm test            # runs Vitest
 
 ---
 
+## Docker Compose (Backend + Redis Stack)
+
+A complete local backend and Redis stack can be brought up from the repository root:
+
+```bash
+docker compose up -d
+```
+
+This spins up:
+- **FastAPI Backend:** Containerized Python 3.11 environment on port `8000`.
+- **Redis Instance:** Local Redis 7 (`redis:7-alpine`) on port `6379` wired automatically via `REDIS_URL=redis://redis:6379/0`.
+
+> **Note on Frontend:** The Next.js frontend is intentionally omitted from Docker Compose to keep local hot-reloading fast and lightweight via `npm run dev`. Run `cd aws-advisor-ui && npm run dev` alongside docker-compose.
+
+To verify the stack readiness:
+```bash
+curl http://localhost:8000/api/health/ready
+```
+
+---
+
+## Architecture & Engineering Decisions
+
+For an in-depth breakdown of the multi-tier LangGraph reasoning graph, Mermaid architecture diagrams, and notable technical decisions (e.g. deterministic Terraform generation, SSE vs WebSockets, anti-hallucination grounding, and multi-model consensus), see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
 ## Docker (backend only)
 
 From `aws-instance-advisor/`:

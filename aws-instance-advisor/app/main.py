@@ -30,6 +30,9 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 def main() -> None:
+    from app.config import validate_startup_config
+
+    validate_startup_config()
     graph = build_graph()
 
     state = {

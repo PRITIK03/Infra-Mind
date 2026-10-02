@@ -173,7 +173,10 @@ async def _graceful_shutdown() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # noqa: ARG001
-    """Startup yields immediately; shutdown drains via _graceful_shutdown."""
+    """Startup validates required config; shutdown drains via _graceful_shutdown."""
+    from app.config import validate_startup_config
+
+    validate_startup_config()
     yield
     await _graceful_shutdown()
 

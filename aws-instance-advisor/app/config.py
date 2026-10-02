@@ -23,6 +23,31 @@ class ConfigError(RuntimeError):
     """Raised when a required environment variable is missing."""
 
 
+REQUIRED_STARTUP_VARS: tuple[str, ...] = (
+    "API_KEY",
+    "BASE_URL",
+    "MODEL_NAME",
+    "VANTAGE_API_KEY",
+)
+
+
+def validate_startup_config() -> None:
+    """Validate all genuinely required configuration variables at startup.
+
+    Fails fast with a single, consolidated ConfigError listing every missing
+    variable rather than failing lazily deep inside the pipeline.
+    """
+    missing = [
+        var for var in REQUIRED_STARTUP_VARS if not (os.getenv(var) or "").strip()
+    ]
+    if missing:
+        formatted = ", ".join(missing)
+        raise ConfigError(
+            f"Missing required environment variable(s): {formatted}. "
+            "Please configure them in your .env file or environment before starting the application."
+        )
+
+
 def _require(name: str) -> str:
     value = os.getenv(name)
     if not value:

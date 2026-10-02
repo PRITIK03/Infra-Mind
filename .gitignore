@@ -1,10 +1,12 @@
 # ── Root workspace junk (local-only) ─────────────────────────
 .kilo/
+.freebuff/
 .pytest_cache/
 ArchitectureforAWS.png
 AWS System Design.pdf
 aws-instance-advisor V1.zip
 result_dump.json
+pc-*.txt
 *.zip
 
 # ── Secrets — never commit real values ───────────────────────

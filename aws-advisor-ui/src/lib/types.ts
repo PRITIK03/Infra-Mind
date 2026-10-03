@@ -77,6 +77,11 @@ export interface SystemDesignRecommendation {
    * Only offered when repository analysis detected a Dockerfile.
    */
   containerized_alternative?: ContainerizedAlternative | null;
+  /**
+   * Opt-in multi-model consensus result. Absent when consensus wasn't
+   * requested; present-but-disabled when the backend declined it.
+   */
+  consensus_result?: ConsensusResult | null;
 }
 
 export interface ContainerizedAlternative {
@@ -85,6 +90,32 @@ export interface ContainerizedAlternative {
   fargate_memory_mib?: number | null;
   why: string;
   trade_off: string;
+}
+
+// ─── Multi-model consensus (deterministic compare, no LLM in the diff) ─────
+export type ConsensusAgreementLevel =
+  | "full"
+  | "partial"
+  | "significant_disagreement";
+
+export interface ConsensusDisagreement {
+  /** Tier name that differed (compute, database, cache, load_balancer). */
+  tier: string;
+  primary_choice: string;
+  secondary_choice: string;
+}
+
+export interface ConsensusResult {
+  /** True when a comparison actually ran; false when declined (see note). */
+  enabled: boolean;
+  primary_model: string;
+  secondary_model: string;
+  agreement_level?: ConsensusAgreementLevel | null;
+  /** Tier names where both models chose identically. */
+  agreements: string[];
+  /** Tiers where the two models chose differently. */
+  disagreements: ConsensusDisagreement[];
+  note?: string | null;
 }
 
 // ─── Well-Architected review (deterministic, no LLM) ──────────────────────

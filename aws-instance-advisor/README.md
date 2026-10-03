@@ -41,8 +41,8 @@ Do not nest or recreate a second frontend under this backend directory.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/PRITIK03/Infra-Mind--host-rec..-.git
-cd Infra-Mind--host-rec..-
+git clone https://github.com/PRITIK03/Infra-Mind.git
+cd Infra-Mind
 ```
 
 ### 2. Set up the backend
@@ -75,7 +75,7 @@ Open `.env` and set:
 | `VANTAGE_API_KEY` | Yes | [Vantage](https://www.vantage.sh/) API key for live EC2 pricing data |
 | `TAVILY_API_KEY` | No | Enables a web-search round during reasoning. Agent works without it. |
 | `API_KEY_2` | No | Second OpenRouter key for automatic rate-limit failover |
-| `CORS_ALLOWED_ORIGIN` | Yes | Explicit frontend origin; use `http://localhost:3000` locally and the real Vercel domain in production |
+| `CORS_ALLOWED_ORIGIN` | No | Frontend origin for cross-origin browser calls. The backend starts without it (cross-origin requests are then rejected), but the web UI needs it — use `http://localhost:3000` locally and the real Vercel domain in production |
 | `PORT` | No | FastAPI port (default `8000`) |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
@@ -91,8 +91,7 @@ Open `.env` and set:
 
 ### 3. Start the backend API
 
-From the repository workspace root (`D:\! Sciqus Internship\AWS Agent` on
-Windows), run:
+From the repository root, run:
 
 ```powershell
 Set-Location .\aws-instance-advisor

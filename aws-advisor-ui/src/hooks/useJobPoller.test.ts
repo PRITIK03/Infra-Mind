@@ -74,6 +74,14 @@ describe("useJobPoller", () => {
     expect(mockedPollJob).toHaveBeenCalledTimes(1);
     unmount();
   });
+
+  it("passes the consensus flag through to createJob", async () => {
+    mockedCreateJob.mockResolvedValue({ job_id: "job-1" });
+    const { result, unmount } = renderHook(() => useJobPoller());
+    await act(async () => { await result.current.submit("api workload", true); });
+    expect(mockedCreateJob).toHaveBeenCalledWith("api workload", true);
+    unmount();
+  });
 });
 
 // ── SSE preference with silent polling fallback ────────────────────────────

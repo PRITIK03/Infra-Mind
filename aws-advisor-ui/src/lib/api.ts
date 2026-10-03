@@ -34,10 +34,13 @@ async function request<T>(
 }
 
 /** POST /api/recommend — kick off a new job */
-export async function createJob(message: string): Promise<{ job_id: string }> {
+export async function createJob(
+  message: string,
+  consensus = false,
+): Promise<{ job_id: string }> {
   return request<{ job_id: string }>("/api/recommend", {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, consensus }),
   });
 }
 

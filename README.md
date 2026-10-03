@@ -40,8 +40,8 @@ aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/PRITIK03/Infra-Mind--host-rec..-.git
-cd Infra-Mind--host-rec..-
+git clone https://github.com/PRITIK03/Infra-Mind.git
+cd Infra-Mind
 ```
 
 ### 2. Set up the backend
@@ -77,7 +77,7 @@ Open `.env` and set:
 | `LLM_REASONING_MAX_TOKENS` | No | Subset of `LLM_MAX_TOKENS` reserved for the model's internal reasoning; mapped onto OpenRouter `reasoning.effort` (default `2048`) |
 | `LLM_FALLBACK_MODELS` | No | Optional comma-separated list of OpenRouter model slugs to try server-side when `MODEL_NAME` is rate-limited or unavailable. Additive to `API_KEY_2` failover. |
 | `API_KEY_2` | No | Second OpenRouter key for automatic rate-limit failover |
-| `CORS_ALLOWED_ORIGIN` | Yes | Explicit frontend origin; use `http://localhost:3000` locally and the real Vercel domain in production |
+| `CORS_ALLOWED_ORIGIN` | No | Frontend origin for cross-origin browser calls. The backend starts without it (cross-origin requests are then rejected), but the web UI needs it — use `http://localhost:3000` locally and the real Vercel domain in production |
 | `PORT` | No | FastAPI port (default `8000`) |
 | `DATABASE_URL` | No | Optional SQLite/Postgres URL enabling run-history persistence via `GET /api/runs`. Without it, jobs are process-local and lost on restart. |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
@@ -189,6 +189,14 @@ A complete local backend and Redis stack can be brought up from the repository r
 docker compose up -d
 ```
 
+> Requires the Compose v2 `docker compose` plugin (2.24+, which added the
+> `env_file` `path`/`required` syntax used in `docker-compose.yml`). The stack
+> boots without a `.env` file — the required secrets fall back to dummy
+> placeholders (the same dummy-env pattern the CI test workflow uses), so it
+> comes up for a smoke test. For real recommendations, set credentials in
+> `aws-instance-advisor/.env` and run
+> `docker compose --env-file aws-instance-advisor/.env up -d --build`.
+> Exported shell variables take precedence over the interpolation file.
 This spins up:
 - **FastAPI Backend:** Containerized Python 3.11 environment on port `8000`.
 - **Redis Instance:** Local Redis 7 (`redis:7-alpine`) on port `6379` wired automatically via `REDIS_URL=redis://redis:6379/0`.

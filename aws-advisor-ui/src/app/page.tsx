@@ -29,6 +29,7 @@ import { CopyReportButton } from "@/components/CopyReportButton";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
 import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
 import { ResultSummaryStrip } from "@/components/ResultSummaryStrip";
+import { ConsensusResult } from "@/components/ConsensusResult";
 import { PipelineTrace } from "@/components/PipelineTrace";
 import type { RunRecord } from "@/lib/types";
 import { BackendStatus } from "@/components/BackendStatus";
@@ -74,7 +75,7 @@ function Wordmark() {
 
 // ── Command-prompt input ──────────────────────────────────────────────────────
 interface InputPanelProps {
-  onSubmit: (msg: string) => void;
+  onSubmit: (msg: string, consensus: boolean) => void;
   disabled: boolean;
   submitHint: string;
 }
@@ -84,6 +85,7 @@ const TEXTAREA_MAX_PX = 220;
 
 function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
   const [value, setValue] = useState("");
+  const [compare, setCompare] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Grow the prompt box with its content, capped at TEXTAREA_MAX_PX
@@ -100,7 +102,7 @@ function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
     e.preventDefault();
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
-    onSubmit(trimmed);
+    onSubmit(trimmed, compare);
     setValue("");
   };
 
@@ -110,7 +112,7 @@ function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
       e.preventDefault();
       const trimmed = value.trim();
       if (trimmed && !disabled) {
-        onSubmit(trimmed);
+        onSubmit(trimmed, compare);
         setValue("");
       }
     }
@@ -184,6 +186,20 @@ function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
             ].join(" ")}
           />
         </div>
+
+        <label className="flex items-center gap-2 mt-3 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={compare}
+            onChange={(e) => setCompare(e.target.checked)}
+            disabled={disabled}
+            className="accent-amber"
+            aria-label="Compare with a second model"
+          />
+          <span className="font-mono text-xs text-ink-dim uppercase tracking-wider">
+            compare with a second model
+          </span>
+        </label>
 
         <div className="flex items-center justify-between mt-2">
           <span className="font-mono text-xs text-ink-dim">
@@ -463,6 +479,10 @@ export default function Home() {
                       technicalNeeds={technicalNeeds}
                       instanceCandidates={instanceCandidates}
                     />
+
+                    {sdr.consensus_result && (
+                      <ConsensusResult consensus={sdr.consensus_result} />
+                    )}
 
                     {tfFiles && Object.keys(tfFiles).length > 0 && (
                       <>

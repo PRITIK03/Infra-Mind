@@ -24,7 +24,7 @@ export interface UseJobPollerReturn {
   retryInfo: string | null;
   isWakingUp: boolean;
   isActive: boolean;
-  submit: (message: string) => Promise<void>;
+  submit: (message: string, consensus?: boolean) => Promise<void>;
   answer: (reply: string) => Promise<void>;
   reset: () => void;
   totalElapsedMs: number | null;
@@ -279,7 +279,7 @@ export function useJobPoller(): UseJobPollerReturn {
   }, []);
 
   const submit = useCallback(
-    async (message: string) => {
+    async (message: string, consensus?: boolean) => {
       clearWakeTimer();
       wakeTimerRef.current = setTimeout(() => setIsWakingUp(true), WAKE_THRESHOLD_MS);
       stopPolling();
@@ -296,7 +296,7 @@ export function useJobPoller(): UseJobPollerReturn {
       lastRetryInfoRef.current = null;
 
       try {
-        const { job_id } = await createJob(message);
+        const { job_id } = await createJob(message, consensus);
         clearWakeTimer();
         setJobId(job_id);
         setStatus("collecting");

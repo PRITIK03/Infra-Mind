@@ -1,4 +1,4 @@
-# InfraMind — AWS Instance Advisor
+# InfraMind — AWS Instance Advisor.
 
 An AI agent that gathers your workload requirements, reasons about system design, researches live AWS instance data across compute, database, and cache tiers, and recommends the optimal setup — with deployable Terraform files generated automatically.
 

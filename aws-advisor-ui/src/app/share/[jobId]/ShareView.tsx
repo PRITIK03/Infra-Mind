@@ -20,6 +20,7 @@ import { ResultSummaryStrip } from "@/components/ResultSummaryStrip";
 import { RequestSummary } from "@/components/RequestSummary";
 import { CopyReportButton } from "@/components/CopyReportButton";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
+import { ConsensusResult } from "@/components/ConsensusResult";
 
 type LoadState =
   | { kind: "loading" }
@@ -164,6 +165,10 @@ function SharedResult({ job }: { job: JobResponse }) {
         <div id="containerized-alternative" className="py-6 scroll-mt-16">
           <ContainerizedAlternative alternative={sdr.containerized_alternative} />
         </div>
+      )}
+
+      {sdr.consensus_result && (
+        <ConsensusResult consensus={sdr.consensus_result} />
       )}
 
       {technicalNeeds && (

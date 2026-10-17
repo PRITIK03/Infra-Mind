@@ -26,6 +26,7 @@ export function SectionNav({ sdr, technicalNeeds, hasTerraform = false }: Props)
       { id: "database", label: "Database", visible: true },
       { id: "cache", label: "Cache", visible: true },
       { id: "load-balancer", label: "Load Balancer", visible: true },
+      { id: "consensus", label: "Consensus", visible: !!sdr.consensus_result?.enabled },
       { id: "terraform", label: "Terraform", visible: hasTerraform },
     ];
     setSections(all.filter((s) => s.visible));

@@ -48,7 +48,8 @@ export function ConsensusResult({ consensus }: Props) {
 
   return (
     <section
-      className="border border-border-subtle animate-fade-in mt-6"
+      id="consensus"
+      className="border border-border-subtle animate-fade-in mt-6 scroll-mt-16"
       aria-label="Consensus check"
     >
       <div className="flex items-center justify-between gap-4 border-b border-border-subtle px-4 py-3">

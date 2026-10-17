@@ -29,11 +29,13 @@ describe("createJob request body", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("includes the consensus flag — explicit true and default false", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ job_id: "job-1" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ job_id: "job-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 

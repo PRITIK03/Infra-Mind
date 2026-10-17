@@ -130,3 +130,10 @@ flowchart TD
 2. **Multi-Key LLM Failover:** Primary -> Secondary (`API_KEY_2`) -> Tertiary (`API_KEY_3`) automatic failover on HTTP 429 rate limit exhaustion.
 3. **Structured Output Repair:** JSON Schema-injected prompts with automatic fallback to LangChain JSON-mode and Pydantic validation repairs.
 4. **Deterministic Well-Architected Review:** Reliability and cost findings evaluated via static rules without non-deterministic LLM variance.
+
+---
+
+## 5. Verification Status & Known Limitations
+
+* **SSE / Browser Verification:** The SSE/browser path has been verified by code inspection and by real backend behavior (confirmed live via a raw SSE client), but has not yet been visually confirmed in an actual browser due to this development sandbox's inability to run `next dev`.
+

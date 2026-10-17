@@ -1,4 +1,4 @@
-import type { FollowupExchange, JobResponse, RunsResponse } from "./types";
+import type { FollowupExchange, JobResponse, RecommendRequest, RunsResponse } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
 
@@ -38,9 +38,10 @@ export async function createJob(
   message: string,
   consensus = false,
 ): Promise<{ job_id: string }> {
+  const payload: RecommendRequest = { message, consensus };
   return request<{ job_id: string }>("/api/recommend", {
     method: "POST",
-    body: JSON.stringify({ message, consensus }),
+    body: JSON.stringify(payload),
   });
 }
 

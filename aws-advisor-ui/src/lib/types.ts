@@ -9,6 +9,11 @@ export type JobStatus =
   | "done"
   | "error";
 
+export interface RecommendRequest {
+  message: string;
+  consensus?: boolean;
+}
+
 export type CacheEngine = "Memcached" | "Redis" | "Valkey";
 
 export interface InstanceRecommendation {

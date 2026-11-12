@@ -90,6 +90,9 @@ def collect_requirements(state: AgentState) -> AgentState:
         "batch or backend processing), store the number in estimated_concurrent_users.\n"
         "- If the user describes a batch job with no live users, store 0 in registered_users.\n"
         "- If the user provides peak RPS (requests per second), store it in requests_per_second.\n"
+        "- Only set database_engine for a stated production database choice. "
+        "Use 'external' if the user wants to keep a database outside this AWS plan. "
+        "Keep deployment details and workflow constraints in additional_notes.\n"
         f"User message: {message}"
         + guidance
     )
@@ -102,14 +105,17 @@ def collect_requirements(state: AgentState) -> AgentState:
     merged = current.model_dump()
     defaults = current.__class__.model_fields
     for field, value in extracted.model_dump().items():
+        if field == "repo_url":
+            continue
         if _should_merge_field(merged.get(field), value, defaults[field].default):
             merged[field] = value
 
     # Deterministic override: a detected URL always wins over a model-guessed
     # one (or fills the field the model omitted).
-    detected_repo_url = detect_repo_url(message)
-    if detected_repo_url:
-        merged["repo_url"] = detected_repo_url
+    if not state.get("repository_managed"):
+        detected_repo_url = detect_repo_url(message)
+        if detected_repo_url:
+            merged["repo_url"] = detected_repo_url
 
     state["requirements"] = UserRequirements(**merged)
     state["latest_user_message"] = None

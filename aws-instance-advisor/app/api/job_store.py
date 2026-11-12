@@ -16,10 +16,8 @@ GitHub MCP, and DATABASE_URL.  ``app/api/main.py`` consumes only the
 
 What is persisted
 -----------------
-Only the fields already surfaced through the job API response
-(``job_id``, ``status``, ``current_stage``, ``next_question``, ``result``,
-``error``, ``retry_info``, ``created_at``) — serialized with Pydantic
-``model_dump_json()`` / ``model_validate_json()``, never hand-built dicts.
+The job API response fields and internal share metadata are serialized with
+Pydantic. Share metadata stays out of the polling and SSE projection.
 The full internal ``AgentState`` (live candidate lists, Pydantic objects)
 is intentionally NOT persisted: it is process-local working memory for
 the executing graph, wasteful to store, and redundant with the API
@@ -41,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -48,6 +47,7 @@ from pydantic import BaseModel
 
 from app.agent.state import AgentState
 from app.api.event_bus import JobEventBus
+from app.models.repository import RepositoryProgress
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,10 @@ class Job:
     retry_info: str | None = None
     created_at: float = field(default_factory=lambda: __import__("time").time())
     followup_history: list[FollowupExchange] = field(default_factory=list)
+    repository: RepositoryProgress | None = None
+    # A repo job and its optional public report use independent IDs.
+    share_id: str | None = None
+    share_only: bool = False
 
 
 class JobStoreBackend(Protocol):
@@ -110,9 +114,12 @@ class JobStoreBackend(Protocol):
         next_question: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
-    ) -> None: ...
+        only_if: tuple[JobStatus, ...] | None = None,
+    ) -> bool: ...
 
     def update_state(self, job_id: str, state: Any) -> None: ...
+
+    def update_repository(self, job_id: str, progress: RepositoryProgress, stage: str | None = None) -> None: ...
 
     def update_retry_info(self, job_id: str, retry_info: str | None) -> None: ...
 
@@ -131,11 +138,7 @@ class JobStoreBackend(Protocol):
 
 
 class JobRecord(BaseModel):
-    """Serializable projection of :class:`Job` — the API response surface.
-
-    Exactly the fields ``_job_response()`` exposes, so a Redis round-trip
-    never loses anything a polling client could observe.
-    """
+    """Serializable job snapshot with internal share metadata."""
 
     job_id: str
     status: JobStatus
@@ -146,6 +149,9 @@ class JobRecord(BaseModel):
     retry_info: str | None = None
     created_at: float
     followup_history: list[FollowupExchange] = []
+    repository: RepositoryProgress | None = None
+    share_id: str | None = None
+    share_only: bool = False
 
 
 def job_snapshot(
@@ -159,6 +165,7 @@ def job_snapshot(
     error: str | None = None,
     retry_info: str | None = None,
     followup_history: list[dict[str, Any]] | None = None,
+    repository: RepositoryProgress | None = None,
 ) -> dict[str, Any]:
     """Single source of truth for a job's JSON projection.
 
@@ -186,6 +193,8 @@ def job_snapshot(
         snapshot["error"] = error
     if followup_history:
         snapshot["followup_history"] = followup_history
+    if repository is not None:
+        snapshot["repository"] = repository.model_dump(exclude_none=True)
     return snapshot
 
 
@@ -201,6 +210,7 @@ def job_snapshot_from_job(job: Job) -> dict[str, Any]:
         error=job.error,
         retry_info=job.retry_info,
         followup_history=[exchange.model_dump() for exchange in job.followup_history],
+        repository=job.repository,
     )
 
 
@@ -216,6 +226,7 @@ def job_snapshot_from_record(record: JobRecord) -> dict[str, Any]:
         error=record.error,
         retry_info=record.retry_info,
         followup_history=[exchange.model_dump() for exchange in record.followup_history],
+        repository=record.repository,
     )
 
 
@@ -257,9 +268,20 @@ class InMemoryJobStore:
     def update_stage(self, job_id: str, stage: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None:
+            if job is None or job.status in ("error", "done"):
                 return
             job.current_stage = stage
+            snapshot = job_snapshot_from_job(job)
+        self._publish(job_id, snapshot)
+
+    def update_repository(self, job_id: str, progress: RepositoryProgress, stage: str | None = None) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status in ("error", "done"):
+                return
+            job.repository = progress
+            if stage is not None:
+                job.current_stage = stage
             snapshot = job_snapshot_from_job(job)
         self._publish(job_id, snapshot)
 
@@ -271,11 +293,12 @@ class InMemoryJobStore:
         next_question: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
-    ) -> None:
+        only_if: tuple[JobStatus, ...] | None = None,
+    ) -> bool:
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None:
-                return
+            if job is None or job.status in ("error", "done") or (only_if and job.status not in only_if):
+                return False
             job.status = status
             if next_question is not None:
                 job.next_question = next_question
@@ -285,6 +308,7 @@ class InMemoryJobStore:
                 job.error = error
             snapshot = job_snapshot_from_job(job)
         self._publish(job_id, snapshot)
+        return True
 
     def update_state(self, job_id: str, state: Any) -> None:
         # Deliberately does not publish: `next_question` (the only part of the
@@ -293,7 +317,7 @@ class InMemoryJobStore:
         # duplicate that event.
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is not None:
+            if job is not None and job.status not in ("error", "done"):
                 job.state = state
                 if state.get("next_question"):
                     job.next_question = state["next_question"]
@@ -302,7 +326,7 @@ class InMemoryJobStore:
         """Set or clear the real-time retry progress message."""
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None:
+            if job is None or job.status == "error":
                 return
             job.retry_info = retry_info
             snapshot = job_snapshot_from_job(job)
@@ -395,6 +419,36 @@ class RedisJobStore:
             raw = raw.decode("utf-8")
         return JobRecord.model_validate_json(raw)
 
+    def _mutate_record(
+        self, job_id: str, update: Callable[[JobRecord], bool], *, publish: bool = True,
+    ) -> bool:
+        # A timed-out worker and a polling replica can race. Retry the
+        # update against the current record if another writer wins.
+        from redis.exceptions import WatchError
+
+        key = self._key(job_id)
+        with self._redis.pipeline() as pipe:
+            for _ in range(8):
+                try:
+                    pipe.watch(key)
+                    raw = pipe.get(key)
+                    if raw is None:
+                        return False
+                    record = JobRecord.model_validate_json(raw)
+                    if not update(record):
+                        return False
+                    pipe.multi()
+                    pipe.set(key, record.model_dump_json(), ex=self._ttl_seconds)
+                    pipe.execute()
+                    break
+                except WatchError:
+                    continue
+            else:
+                raise WatchError("Job record changed repeatedly")
+        if publish:
+            self._publish(job_id, record)
+        return True
+
     def _record_to_job(self, record: JobRecord) -> Job:
         with self._states_lock:
             state = self._states.get(record.job_id, {})
@@ -409,6 +463,9 @@ class RedisJobStore:
             retry_info=record.retry_info,
             created_at=record.created_at,
             followup_history=list(record.followup_history),
+            repository=record.repository,
+            share_id=record.share_id,
+            share_only=record.share_only,
         )
 
     @staticmethod
@@ -423,6 +480,9 @@ class RedisJobStore:
             retry_info=job.retry_info,
             created_at=job.created_at,
             followup_history=list(job.followup_history),
+            repository=job.repository,
+            share_id=job.share_id,
+            share_only=job.share_only,
         )
 
     def _set_state(self, job_id: str, state: Any) -> None:
@@ -455,12 +515,24 @@ class RedisJobStore:
         self._save_record(self._record_from_job(job))
 
     def update_stage(self, job_id: str, stage: str) -> None:
-        record = self._load_record(job_id)
-        if record is None:
-            return
-        record.current_stage = stage
-        self._save_record(record)
-        self._publish(job_id, record)
+        def update(record: JobRecord) -> bool:
+            if record.status in ("error", "done"):
+                return False
+            record.current_stage = stage
+            return True
+
+        self._mutate_record(job_id, update)
+
+    def update_repository(self, job_id: str, progress: RepositoryProgress, stage: str | None = None) -> None:
+        def update(record: JobRecord) -> bool:
+            if record.status in ("error", "done"):
+                return False
+            record.repository = progress
+            if stage is not None:
+                record.current_stage = stage
+            return True
+
+        self._mutate_record(job_id, update)
 
     def update_status(
         self,
@@ -470,19 +542,21 @@ class RedisJobStore:
         next_question: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
-    ) -> None:
-        record = self._load_record(job_id)
-        if record is None:
-            return
-        record.status = status
-        if next_question is not None:
-            record.next_question = next_question
-        if result is not None:
-            record.result = result
-        if error is not None:
-            record.error = error
-        self._save_record(record)
-        self._publish(job_id, record)
+        only_if: tuple[JobStatus, ...] | None = None,
+    ) -> bool:
+        def update(record: JobRecord) -> bool:
+            if record.status in ("error", "done") or (only_if and record.status not in only_if):
+                return False
+            record.status = status
+            if next_question is not None:
+                record.next_question = next_question
+            if result is not None:
+                record.result = result
+            if error is not None:
+                record.error = error
+            return True
+
+        return self._mutate_record(job_id, update)
 
     def update_state(self, job_id: str, state: Any) -> None:
         # Does not publish: `next_question` (the only state on the API
@@ -490,26 +564,30 @@ class RedisJobStore:
         self._set_state(job_id, state)
         next_question = state.get("next_question") if hasattr(state, "get") else None
         if next_question:
-            record = self._load_record(job_id)
-            if record is not None:
+            def update(record: JobRecord) -> bool:
+                if record.status in ("error", "done"):
+                    return False
                 record.next_question = next_question
-                self._save_record(record)
+                return True
+
+            self._mutate_record(job_id, update, publish=False)
 
     def update_retry_info(self, job_id: str, retry_info: str | None) -> None:
         """Set or clear the real-time retry progress message."""
-        record = self._load_record(job_id)
-        if record is None:
-            return
-        record.retry_info = retry_info
-        self._save_record(record)
-        self._publish(job_id, record)
+        def update(record: JobRecord) -> bool:
+            if record.status == "error":
+                return False
+            record.retry_info = retry_info
+            return True
+
+        self._mutate_record(job_id, update)
 
     def add_followup(self, job_id: str, exchange: FollowupExchange) -> None:
-        record = self._load_record(job_id)
-        if record is None:
-            return
-        record.followup_history.append(exchange)
-        self._save_record(record)
+        def update(record: JobRecord) -> bool:
+            record.followup_history.append(exchange)
+            return True
+
+        self._mutate_record(job_id, update, publish=False)
 
     def ping(self) -> None:
         """One lightweight Redis PING; raises on an unreachable server."""

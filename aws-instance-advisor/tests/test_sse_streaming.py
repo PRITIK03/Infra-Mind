@@ -849,13 +849,15 @@ def test_inmemory_store_publishes_from_existing_update_points():
 
     # update_state is intentionally not a publish trigger: next_question is
     # always accompanied by update_status("awaiting_input").
+    question_job = _new_job("pub-question")
+    store.put(question_job)
     published_before = len(publisher.published)
     store.update_state(
-        job.job_id, {**_make_state(), "next_question": "How much traffic?"}
+        question_job.job_id, {**_make_state(), "next_question": "How much traffic?"}
     )
     assert len(publisher.published) == published_before
 
-    store.update_status(job.job_id, "awaiting_input", next_question="How much traffic?")
+    store.update_status(question_job.job_id, "awaiting_input", next_question="How much traffic?")
     assert publisher.published[-1][1]["next_question"] == "How much traffic?"
 
 

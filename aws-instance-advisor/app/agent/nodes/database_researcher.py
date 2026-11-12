@@ -79,6 +79,10 @@ def research_database(state: AgentState) -> AgentState:
         return state
 
     all_instances = fetch_rds_instance_data()
+    if engine := state.get("target_rds_engine"):
+        priced_for_engine = [candidate for candidate in all_instances if engine in candidate.hourly_prices_by_engine]
+        if priced_for_engine:
+            all_instances = priced_for_engine
     family_matched = _filter_by_family(all_instances, needs)
     if not family_matched:
         raise DatabaseResearchError(

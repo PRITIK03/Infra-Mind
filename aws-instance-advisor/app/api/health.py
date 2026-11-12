@@ -9,7 +9,7 @@ Liveness vs. readiness checks (Part B production readiness).
   seconds must never burn LLM/live-data quota or wait on a provider:
 
   - required config vars present (API_KEY, BASE_URL, MODEL_NAME,
-    VANTAGE_API_KEY, CORS_ALLOWED_ORIGIN) — read straight from the
+    VANTAGE_API_KEY), plus optional CORS_ALLOWED_ORIGIN, read from the
     environment, never ``_require()``, so the endpoint reports rather
     than raising;
   - Redis reachable **only if** REDIS_URL is configured — one lightweight
@@ -44,6 +44,7 @@ def build_readiness_report(jobs_store: Any = None) -> tuple[dict[str, Any], bool
     ``jobs_store`` is the process's job store (injectable for tests);
     ``None`` resolves to the concrete store from runtime.
     """
+    from app.analysis.repository import repository_scan_enabled
     from app.config import get_redis_settings
 
     required = ("API_KEY", "BASE_URL", "MODEL_NAME", "VANTAGE_API_KEY")
@@ -53,6 +54,12 @@ def build_readiness_report(jobs_store: Any = None) -> tuple[dict[str, Any], bool
         "redis": _env_present("REDIS_URL"),
         "sentry": _env_present("SENTRY_DSN"),
         "github_mcp": _env_present("GITHUB_MCP_TOKEN"),
+        "repository_analysis": repository_scan_enabled(),
+        "repository_advisories": (
+            repository_scan_enabled()
+            and _env_present("REPOSITORY_OSV_SCANNER")
+            and _env_present("OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY")
+        ),
         "consensus": _env_present("CONSENSUS_MODEL"),
         "tavily": _env_present("TAVILY_API_KEY"),
     }

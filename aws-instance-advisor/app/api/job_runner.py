@@ -36,6 +36,7 @@ Both constants are overridable via environment variables for larger hosts.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 import threading
 import time
@@ -43,12 +44,16 @@ from typing import Any
 
 from app.agent.graph import build_graph
 from app.agent.state import AgentState
+from app.analysis.repository import reasoner_context, scan_repository
 from app.api.error_reporting import capture_exception, capture_message
 from app.api.jobs import label_for_node
 from app.api.runtime import jobs
 from app.api.shutdown import coordinator as shutdown_coordinator
 from app.logging_config import bind_job_id
+from app.models.repository import RepositoryProgress
 from app.models.schemas import SystemDesignRecommendation, UserRequirements
+
+logger = logging.getLogger(__name__)
 
 # Max simultaneous agent-run threads. Conservative for small cloud hosts
 # (Render free/starter, Railway, Fly.io shared-cpu-1x).
@@ -141,36 +146,52 @@ def _drive_job(job_id: str, state: AgentState, job_start: float) -> None:
     unhandled exception the job is marked errored — the original behavior.
     """
     try:
-        while True:
-            state = run_graph_with_streaming(job_id, state, collecting=True)
+        if (ref := state.get("repository_ref")) and state.get("repository_progress") is None:
+            jobs.update_repository(job_id, RepositoryProgress(status="checking"), "Checking GitHub")
 
-            if (
-                state.get("system_design_recommendation") is not None
-                or state.get("recommendation") is not None
-            ):
-                final = serialize_result(state)
-                jobs.update_status(job_id, "done", result=final)
+            def on_scanning() -> None:
+                jobs.update_repository(job_id, RepositoryProgress(status="scanning"), "Analyzing repository")
+
+            progress, report = scan_repository(ref, on_scanning)
+            state["repository_progress"] = progress
+            state["repository_report"] = report
+            if report is not None:
+                state["repo_analysis"] = reasoner_context(report)
+            else:
+                state["repo_analysis_note"] = "Repository analysis was unavailable. The recommendation uses workload details only."
+            jobs.update_repository(job_id, progress)
+            job = jobs.get(job_id)
+            if job is None or job.status == "error":
+                return
+            if report is None and not state.get("latest_user_message"):
+                jobs.update_status(job_id, "error", error="Add workload details or check the GitHub link and try again.")
+                return
+            jobs.update_stage(job_id, "Collecting requirements" if state.get("latest_user_message") else "Preparing recommendation")
+
+        state = run_graph_with_streaming(job_id, state, collecting=True)
+
+        if (
+            state.get("system_design_recommendation") is not None
+            or state.get("recommendation") is not None
+        ):
+            if jobs.update_status(job_id, "done", result=serialize_result(state)):
                 record_completed_run(job_id, state, job_start)
-                return
-
-            if state.get("next_question"):
-                jobs.update_status(
-                    job_id,
-                    "awaiting_input",
-                    next_question=state["next_question"],
-                )
-                return
-
+        elif state.get("next_question"):
             jobs.update_status(
                 job_id,
-                "error",
-                error="No recommendation or follow-up question was produced.",
+                "awaiting_input",
+                next_question=state["next_question"],
             )
-            return
+        else:
+            jobs.update_status(job_id, "error", error="No recommendation or follow-up question was produced.")
 
     except Exception as exc:
-        jobs.update_status(job_id, "error", error=f"{type(exc).__name__}: {exc}")
-        capture_exception(exc)
+        if state.get("repository_ref"):
+            jobs.update_status(job_id, "error", error="Analysis couldn’t finish. Try again.")
+            logger.error("Repository-backed analysis failed (%s)", type(exc).__name__)
+        else:
+            jobs.update_status(job_id, "error", error=f"{type(exc).__name__}: {exc}")
+            capture_exception(exc)
 
 
 def graph_loop_sync(job_id: str, initial_state: AgentState) -> None:
@@ -194,11 +215,10 @@ def graph_loop_sync(job_id: str, initial_state: AgentState) -> None:
 def resume_with_answer_sync(job_id: str, answer: str) -> None:
     """Resume a job in awaiting_input status after the user replies."""
     job = jobs.get(job_id)
-    if job is None:
+    if job is None or not job.state or job.status != "running":
         return
-    state = job.state
+    state = job.state.copy()
     state["latest_user_message"] = answer
-    jobs.update_status(job_id, "running")
     job_start = time.monotonic()
     with bind_job_id(job_id):
         shutdown_coordinator.job_started()
@@ -232,10 +252,11 @@ def submit_with_timeout(fn, *args) -> None:
                 f"Job timed out after {JOB_TIMEOUT_SECONDS:.0f}s — "
                 "the agent took too long to respond. Please try again."
             )
-            jobs.update_status(job_id, "error", error=timeout_message)
+            future.cancel()
             # Job timeouts are swallowed here (the job is marked errored, no
             # exception propagates to FastAPI), so report explicitly.
-            capture_message(f"Job {job_id} timed out: {timeout_message}")
+            if jobs.update_status(job_id, "error", error=timeout_message, only_if=("collecting", "running", "awaiting_input")):
+                capture_message(f"Job {job_id} timed out: {timeout_message}")
         except Exception:
             # The underlying fn already wrote its own error via jobs.update_status;
             # nothing to do here — exceptions from the future are already handled
@@ -255,6 +276,10 @@ def record_completed_run(
     Extracts grounding status and cost from the final state and calls
     persist_run, which logs to stdout and optionally writes to the DB.
     """
+    # The public history endpoint exposes its job IDs. Keep repository jobs
+    # off that index so it cannot disclose the report's owner capability.
+    if state.get("repository_ref"):
+        return
     try:
         from app.observability import persist_run
         from app.config import get_llm_settings
@@ -356,15 +381,27 @@ def serialize_result(state: AgentState) -> dict[str, Any]:
         else:
             result["technical_needs"] = tn
     if requirements is not None:
-        if hasattr(requirements, "model_dump"):
-            result["user_requirements"] = requirements.model_dump(mode="json")
+        stated = state.get("repository_stated_requirements", requirements)
+        if hasattr(stated, "model_dump"):
+            result["user_requirements"] = stated.model_dump(mode="json")
         else:
-            result["user_requirements"] = requirements
+            result["user_requirements"] = stated
     if candidates:
         result["instance_candidates"] = [
             c.model_dump(mode="json") if hasattr(c, "model_dump") else c
             for c in candidates
         ]
+    if (report := state.get("repository_report")) is not None:
+        result["repository_report"] = report.model_dump(mode="json")
+        database = getattr(requirements, "database_engine", None)
+        observed = [engine for engine in report.databases if engine != "Redis"]
+        if database not in (None, "none", "external") and observed and database not in observed:
+            result["repository_deployment_notes"] = [
+                f"The repository references {', '.join(observed)}, while the production target is {database}. "
+                "Verify configuration, migration, and rollback before deploying."
+            ]
+    if assumptions := state.get("repository_assumptions"):
+        result["repository_assumptions"] = assumptions
     return result
 
 

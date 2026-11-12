@@ -45,6 +45,14 @@ class ResourceProfile(str, Enum):
     UNKNOWN = "unknown"
 
 
+RdsEngine = Literal["PostgreSQL", "MySQL", "MariaDB"]
+DatabaseTarget = Literal[
+    "PostgreSQL", "MySQL", "MariaDB", "SQLite", "MongoDB", "DynamoDB", "Oracle", "SQL Server",
+    "external", "none",
+]
+SUPPORTED_RDS_ENGINES = ("PostgreSQL", "MySQL", "MariaDB")
+
+
 class UserRequirements(BaseModel):
     """
     Raw requirement information gathered from the user during the
@@ -95,6 +103,10 @@ class UserRequirements(BaseModel):
     additional_notes: Optional[str] = Field(
         default=None,
         description="Any other free-text context provided by the user.",
+    )
+    database_engine: Optional[DatabaseTarget] = Field(
+        default=None,
+        description="Explicit production database target. Use 'external' to keep an existing external database, or 'none' for no database. Leave unset if unclear.",
     )
     repo_url: Optional[str] = Field(
         default=None,
@@ -276,6 +288,7 @@ class DatabaseCandidate(BaseModel):
         default=None,
         description="On-demand hourly price for us-east-1, if available from the source.",
     )
+    hourly_prices_by_engine: dict[str, float] = Field(default_factory=dict)
 
 
 class CacheCandidate(BaseModel):

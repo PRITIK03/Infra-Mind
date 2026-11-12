@@ -54,7 +54,11 @@ def build_graph():
     graph.add_node("generate_terraform", generate_terraform)
 
     graph.set_entry_point("collect_requirements")
-    graph.add_edge("collect_requirements", "analyze_repository")
+    graph.add_conditional_edges(
+        "collect_requirements",
+        lambda state: "managed" if state.get("repository_managed") else "legacy",
+        {"managed": "validate_requirements", "legacy": "analyze_repository"},
+    )
     graph.add_edge("analyze_repository", "validate_requirements")
 
     graph.add_conditional_edges(

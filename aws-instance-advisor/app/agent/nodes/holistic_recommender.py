@@ -246,6 +246,8 @@ def _compute_estimated_cost(
     compute_candidates: list[InstanceCandidate],
     db_candidates: list[DatabaseCandidate],
     cache_candidates: list[CacheCandidate],
+    *,
+    rds_engine: str | None = None,
 ) -> EstimatedCost:
     """
     Compute an estimated monthly on-demand cost from live pricing data.
@@ -259,7 +261,14 @@ def _compute_estimated_cost(
     cache_price = None
 
     if sdr.database.needed and sdr.database.recommended_instance:
-        db_price = _find_price(db_candidates, sdr.database.recommended_instance)
+        if rds_engine is None:
+            db_price = _find_price(db_candidates, sdr.database.recommended_instance)
+        else:
+            db_price = next(
+                (candidate.hourly_prices_by_engine.get(rds_engine) for candidate in db_candidates
+                 if candidate.instance_type == sdr.database.recommended_instance),
+                None,
+            )
 
     if sdr.cache.needed and sdr.cache.recommended_instance:
         cache_price = _find_price(cache_candidates, sdr.cache.recommended_instance)
@@ -405,7 +414,7 @@ def _build_prompt(
     cache_rule = _CACHE_RULE_PICK if needs_cache else _CACHE_RULE_SKIP
     lb_instruction = _LB_INSTRUCTION_NEEDED if lb_needed else _LB_INSTRUCTION_NOT_NEEDED
 
-    return _PROMPT_TEMPLATE.format(
+    prompt = _PROMPT_TEMPLATE.format(
         requirements=requirements.model_dump_json(indent=2),
         technical_needs=needs.model_dump_json(indent=2),
         compute_candidates=compute_text,
@@ -416,6 +425,17 @@ def _build_prompt(
         lb_needed=lb_needed,
         lb_instruction=lb_instruction,
     )
+    if state.get("repository_report"):
+        context = state["repo_analysis"]
+        prompt += (
+            f"\n\nRepository evidence for context: {context.analysis_note}. "
+            "Explain deployment dependencies and any transition from repository storage to the stated production database."
+        )
+    if engine := state.get("target_rds_engine"):
+        prompt += f"\nUse {engine} for database.engine_suggestion."
+    if assumptions := state.get("repository_assumptions"):
+        prompt += "\nKeep this sizing provisional: " + " ".join(assumptions)
+    return prompt
 
 
 def build_system_design_recommendation(
@@ -527,8 +547,25 @@ def build_system_design_recommendation(
     # ── Short-circuit skipped tiers ────────────────────────────────────────
     # If the workload doesn't need a tier, replace whatever the LLM said
     # with the canonical needed=False value constructed in code.
+    target_rds_engine = state.get("target_rds_engine")
     if not needs.needs_database:
-        result = result.model_copy(update={"database": _skipped_database(needs.reasoning)})
+        database = _skipped_database(needs.reasoning)
+        if requirements.database_engine == "external":
+            database.why = "Keep the existing database. This plan includes no replacement RDS instance."
+        elif requirements.database_engine not in (None, "none"):
+            database.why = f"Plan persistence for {requirements.database_engine} separately. This plan includes no RDS instance."
+        result = result.model_copy(update={"database": database})
+    elif target_rds_engine and db_candidates:
+        database = result.database
+        if not database.needed or not database.recommended_instance:
+            database = DatabaseRecommendation(
+                needed=True, recommended_instance=db_candidates[0].instance_type,
+                why="Candidate from the AWS catalog for the selected database target.",
+                confidence="low",
+            )
+        result = result.model_copy(update={
+            "database": database.model_copy(update={"engine_suggestion": target_rds_engine}),
+        })
     if not needs.needs_cache:
         result = result.model_copy(update={"cache": _skipped_cache(needs.reasoning)})
 
@@ -537,7 +574,8 @@ def build_system_design_recommendation(
     result = result.model_copy(
         update={
             "estimated_cost": _compute_estimated_cost(
-                result, needs, compute_candidates, db_candidates, cache_candidates
+                result, needs, compute_candidates, db_candidates, cache_candidates,
+                rds_engine=target_rds_engine,
             ),
             "repo_analysis_note": state.get("repo_analysis_note"),
         }

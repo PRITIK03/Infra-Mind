@@ -45,6 +45,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel  # noqa: F401  (re-exported for route typing)
@@ -73,10 +75,12 @@ from app.api.job_store import (
 from app.api.rate_limit import (
     RATE_LIMIT_MAX_REQUESTS,  # noqa: F401  (re-exported)
     RATE_LIMIT_WINDOW_SECONDS,  # noqa: F401  (re-exported)
+    InMemoryRateLimiter,
     client_id as _client_id,
     recommend_rate_limiter,
     stream_limiter,
 )
+from app.api.repository_share import repository_share_result
 from app.api.runtime import event_bus, jobs
 from app.api.schemas import AnswerRequest, FollowupRequest, RecommendRequest
 from app.api.sse import (
@@ -91,8 +95,10 @@ from app.api.shutdown import (
 )
 from app.config import get_api_settings
 from app.logging_config import bind_job_id, configure_logging
+from app.models.repository import RepositoryProgress
 
 logger = logging.getLogger(__name__)
+share_rate_limiter = InMemoryRateLimiter(12, 60)
 
 # One structured-logging install for the whole process.  LOG_FORMAT=text
 # gives the human-readable variant for local development.
@@ -216,6 +222,8 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Content-Security-Policy"] = "default-src 'self'"
+    if request.url.path.startswith(("/api/recommend", "/api/share/")) and not request.url.path.endswith("/stream"):
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -233,6 +241,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500,
         content={"detail": "Internal server error"},
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if request.url.path.rstrip("/") == "/api/recommend":
+        # Pydantic can attach the whole submitted body to a model error.
+        # Workload descriptions and mistyped URLs can contain credentials.
+        errors = exc.errors()
+        for error in errors:
+            if error["type"] == "github_url" or "github_url" in error["loc"]:
+                return JSONResponse(status_code=422, content={"detail": error["msg"], "field": "github_url"})
+        return JSONResponse(status_code=422, content={"detail": [
+            {key: error[key] for key in ("loc", "msg", "type")} for error in errors
+        ]})
+    return await request_validation_exception_handler(request, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -332,14 +355,18 @@ def create_recommend_job(request: Request, req: RecommendRequest) -> dict[str, A
         )
     job_id = str(uuid.uuid4())
     state = _empty_state()
-    state["latest_user_message"] = req.message
+    state["latest_user_message"] = req.message or None
     state["consensus_requested"] = req.consensus
+    state["repository_managed"] = True
+    state["repository_ref"] = req.repository
 
     job = Job(
         job_id=job_id,
         status="collecting",
         current_stage="Initializing",
         state=state,
+        repository=RepositoryProgress(status="checking") if req.repository else None,
+        share_id=str(uuid.uuid4()) if req.repository else None,
     )
     jobs.put(job)
     _submit_with_timeout(_graph_loop_sync, job_id, state)
@@ -362,8 +389,8 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
     document each streamed event carries.
     """
     job = await asyncio.to_thread(jobs.get, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job is None or job.share_only:
+        raise HTTPException(status_code=404, detail="Job not found")
     return _job_response(job)
 
 
@@ -402,8 +429,8 @@ async def stream_job_progress(request: Request, job_id: str) -> StreamingRespons
     # 404 before reserving a slot: an unknown/expired id must not consume a
     # client's stream budget.
     job = await asyncio.to_thread(jobs.get, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job is None or job.share_only:
+        raise HTTPException(status_code=404, detail="Job not found")
 
     # While the process is draining for shutdown, refuse new streams — the
     # client falls back to polling, which needs no long-lived connection.
@@ -447,25 +474,34 @@ async def stream_job_progress(request: Request, job_id: str) -> StreamingRespons
 
 @app.get("/api/share/{job_id}")
 async def get_shared_result(job_id: str) -> dict[str, Any]:
-    """Read-only alias of the polling endpoint, for share links.
-
-    A new endpoint is only justified for the contract it enforces: a share
-    link should only work for a completed result, so anything that is not
-    ``status == "done"`` (in progress, awaiting input, failed, or expired)
-    returns 404 instead of exposing progress or error detail.
-
-    Access-control note: there is no auth on this app, and
-    ``GET /api/recommend/{job_id}`` already returns a job's result to anyone
-    holding its unguessable UUIDv4 — a pre-existing design characteristic of
-    this backend (and the same reason the polling endpoint is safe to load
-    balance), not a privacy regression introduced by sharing.  This alias
-    adds the "finished results only" rule; genuine access control would need
-    authn/authz on both routes, which is out of scope here.
-    """
+    """Resolve a completed legacy result or a limited share-only record."""
     job = await asyncio.to_thread(jobs.get, job_id)
-    if job is None or job.status != "done":
-        raise HTTPException(status_code=404, detail=f"Shared result {job_id} not found")
+    if job is None or job.status != "done" or job.share_id:
+        raise HTTPException(status_code=404, detail="Shared result not found")
     return _job_response(job)
+
+
+@app.post("/api/recommend/{job_id}/share")
+def create_share_link(request: Request, job_id: str) -> dict[str, str]:
+    allowed, retry_after = share_rate_limiter.allow(_client_id(request))
+    if not allowed:
+        raise HTTPException(
+            status_code=429, detail="Too many share requests. Try again shortly.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    job = jobs.get(job_id)
+    if job is None or job.share_only or job.status != "done":
+        raise HTTPException(status_code=404, detail="Completed job not found")
+    if job.share_id is None:
+        return {"share_id": job.job_id}
+    if not job.result or (public_result := repository_share_result(job.result)) is None:
+        raise HTTPException(status_code=409, detail="This job has no recommendation to share.")
+    if jobs.get(job.share_id) is None:
+        jobs.put(Job(
+            job_id=job.share_id, status="done", current_stage="Complete",
+            state=_empty_state(), result=public_result, share_only=True, created_at=job.created_at,
+        ))
+    return {"share_id": job.share_id}
 
 
 @app.post("/api/recommend/{job_id}/answer")
@@ -485,14 +521,19 @@ async def answer_question(request: Request, job_id: str, req: AnswerRequest) -> 
         )
 
     job = await asyncio.to_thread(jobs.get, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job is None or job.share_only:
+        raise HTTPException(status_code=404, detail="Job not found")
     if job.status != "awaiting_input":
         raise HTTPException(
             status_code=400,
             detail=f"Job is not awaiting input (current status: {job.status})",
         )
 
+    if not job.state:
+        raise HTTPException(status_code=409, detail="This analysis can no longer be resumed. Start a new analysis.")
+    claimed = await asyncio.to_thread(jobs.update_status, job_id, "running", only_if=("awaiting_input",))
+    if not claimed:
+        raise HTTPException(status_code=409, detail="This question has already been answered.")
     _submit_with_timeout(_resume_with_answer_sync, job_id, req.answer)
 
     return {"job_id": job_id, "status": "running"}
@@ -518,8 +559,8 @@ async def ask_followup_question(
         )
 
     job = await asyncio.to_thread(jobs.get, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job is None or job.share_only:
+        raise HTTPException(status_code=404, detail="Job not found")
     if job.status != "done":
         raise HTTPException(
             status_code=400,

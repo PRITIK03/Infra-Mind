@@ -5,18 +5,21 @@ Extracted from ``app/api/main.py`` so the route module holds only app
 construction, middleware, and route definitions.  ``main.py`` re-exports
 these names unchanged.
 
-The validators are deliberately strict about whitespace-only input: an
-agent run costs real LLM/live-data quota, so an empty-after-stripping
-message must be rejected by FastAPI (422) rather than started.
+Recommendation requests need workload text, a repository, or both.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+from app.models.repository import RepositoryRef, repository_input
 
 
 class RecommendRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=10_000)
+    message: str = Field(default="", max_length=10_000)
+    github_url: str | None = Field(default=None, max_length=256)
+    _repository: RepositoryRef | None = PrivateAttr(default=None)
     consensus: bool = Field(
         default=False,
         description=(
@@ -29,13 +32,19 @@ class RecommendRequest(BaseModel):
         ),
     )
 
-    @field_validator("message")
-    @classmethod
-    def validate_message(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("message must contain non-whitespace text")
-        return value
+    @model_validator(mode="after")
+    def normalize_input(self) -> "RecommendRequest":
+        try:
+            self.message, self._repository = repository_input(self.message, (self.github_url or "").strip())
+        except ValueError as exc:
+            raise PydanticCustomError("github_url", str(exc)) from None
+        if not self.message and self._repository is None:
+            raise ValueError("Enter workload details or a GitHub repository URL.")
+        return self
+
+    @property
+    def repository(self) -> RepositoryRef | None:
+        return self._repository
 
 
 class AnswerRequest(BaseModel):

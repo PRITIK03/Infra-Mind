@@ -196,6 +196,8 @@ docker compose up -d
 > comes up for a smoke test. For real recommendations, set credentials in
 > `aws-instance-advisor/.env` and run
 > `docker compose --env-file aws-instance-advisor/.env up -d --build`.
+> The explicit `--env-file` supplies Compose interpolation values; the service
+> `env_file` alone does not override dummy defaults in `environment`.
 > Exported shell variables take precedence over the interpolation file.
 This spins up:
 - **FastAPI Backend:** Containerized Python 3.11 environment on port `8000`.

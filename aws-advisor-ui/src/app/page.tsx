@@ -22,7 +22,6 @@ const TerraformViewer = dynamic(
 );
 import { FollowupPanel } from "@/components/FollowupPanel";
 import { ErrorPanel } from "@/components/ErrorPanel";
-import { LiveStatsReadout } from "@/components/LiveStatsReadout";
 import { SectionNav } from "@/components/SectionNav";
 import { RequestSummary } from "@/components/RequestSummary";
 import { CopyReportButton } from "@/components/CopyReportButton";
@@ -34,7 +33,6 @@ import { PipelineTrace } from "@/components/PipelineTrace";
 import type { RunRecord } from "@/lib/types";
 import { BackendStatus } from "@/components/BackendStatus";
 import { CommandPalette } from "@/components/CommandPalette";
-import { PipelinePreview } from "@/components/PipelinePreview";
 import { getRuns } from "@/lib/api";
 
 // ── Example prompts drawn from the validated test scenarios ─────────────────
@@ -66,9 +64,8 @@ function Wordmark() {
   return (
     <div className="flex items-baseline gap-2">
       <span className="font-mono text-sm font-medium text-amber tracking-tight">
-        aws-instance-advisor
+        InfraMind
       </span>
-      <span className="font-mono text-xs text-ink-dim">v2</span>
     </div>
   );
 }
@@ -77,13 +74,12 @@ function Wordmark() {
 interface InputPanelProps {
   onSubmit: (msg: string, consensus: boolean) => void;
   disabled: boolean;
-  submitHint: string;
 }
 
 // Auto-grow cap — roughly ten comfortable lines before the box scrolls.
 const TEXTAREA_MAX_PX = 220;
 
-function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
+function InputPanel({ onSubmit, disabled }: InputPanelProps) {
   const [value, setValue] = useState("");
   const [compare, setCompare] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -110,34 +106,22 @@ function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
     // Cmd/Ctrl+Enter submits; plain Enter adds newline
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      const trimmed = value.trim();
-      if (trimmed && !disabled) {
-        onSubmit(trimmed, compare);
-        setValue("");
-      }
+      e.currentTarget.form?.requestSubmit();
     }
-  };
-
-  const fillExample = (prompt: string) => {
-    setValue(prompt);
-    textareaRef.current?.focus();
   };
 
   return (
     <div className="w-full">
       {/* Prompt chips */}
       <div className="mb-5">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="font-mono text-xs text-ink-dim uppercase tracking-widest">
-            examples
-          </span>
-          <span className="flex-1 border-t border-border-subtle" />
-        </div>
         <div className="flex flex-wrap gap-2">
           {EXAMPLES.map((ex) => (
             <button
               key={ex.label}
-              onClick={() => fillExample(ex.prompt)}
+              onClick={() => {
+                setValue(ex.prompt);
+                textareaRef.current?.focus();
+              }}
               disabled={disabled}
               className={[
                 "border border-border-subtle px-3 py-1.5",
@@ -163,11 +147,6 @@ function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
             "focus-within:border-amber/30",
           ].join(" ")}
         >
-          {/* Prompt sigil */}
-          <div className="flex items-start pt-3 px-3 shrink-0 border-r border-border-subtle">
-            <span className="font-mono text-sm text-amber leading-6">&gt;</span>
-          </div>
-
           <textarea
             ref={textareaRef}
             value={value}
@@ -201,10 +180,7 @@ function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
           </span>
         </label>
 
-        <div className="flex items-center justify-between mt-2">
-          <span className="font-mono text-xs text-ink-dim">
-            {submitHint} to submit
-          </span>
+        <div className="flex items-center justify-end mt-4">
           <button
             type="submit"
             disabled={!value.trim() || disabled}
@@ -232,8 +208,6 @@ export default function Home() {
   const router = useRouter();
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [recentRun, setRecentRun] = useState<RunRecord | null>(null);
-  const [platformHint, setPlatformHint] = useState("⌘K / Ctrl+K");
-  const [submitHint, setSubmitHint] = useState("⌘↵ / Ctrl+↵");
   const {
     status,
     currentStage,
@@ -251,9 +225,6 @@ export default function Home() {
   } = useJobPoller();
 
   useEffect(() => {
-    const isApple = /Mac|iPhone|iPad/.test(navigator.platform);
-    setPlatformHint(isApple ? "⌘K" : "Ctrl+K");
-    setSubmitHint(isApple ? "⌘↵" : "Ctrl+↵");
     getRuns()
       .then((response) => {
         if (response.observability_configured && response.runs.length > 0) {
@@ -327,9 +298,6 @@ export default function Home() {
           {process.env.NEXT_PUBLIC_API_URL && (
             <span className="flex items-center gap-2">
               <BackendStatus />
-              <span className="font-mono text-xs text-ink-dim hidden sm:block">
-                {process.env.NEXT_PUBLIC_API_URL}
-              </span>
             </span>
           )}
         </div>
@@ -351,29 +319,13 @@ export default function Home() {
         {showLanding && (
           <section className="animate-fade-in max-w-3xl w-full mx-auto">
             <div className="mb-8">
-              <h1 className="font-mono text-xl font-medium text-ink mb-2 tracking-tight">
-                <span className="text-amber mr-2" aria-hidden="true">
-                  &gt;
-                </span>
-                AWS Instance Advisor
+              <h1 className="font-sans text-3xl font-medium text-ink tracking-tight">
+                Plan your AWS infrastructure
               </h1>
-              <p className="font-sans text-sm text-ink-muted leading-relaxed max-w-xl">
-                Describe your application and workload. The advisor reasons about
-                your requirements, researches live AWS instance data, and returns
-                a vetted compute, database, cache, and load-balancer recommendation
-                — plus ready-to-apply Terraform.
-              </p>
-              <div className="mt-4">
-                <LiveStatsReadout />
-              </div>
             </div>
-            <InputPanel onSubmit={submit} disabled={isActive} submitHint={submitHint} />
-            <p className="mt-3 text-center font-mono text-[10px] text-ink-dim">
-              {platformHint} for quick actions
-            </p>
+            <InputPanel onSubmit={submit} disabled={isActive} />
             {recentRun && recentSnapshot && (
               <div className="mt-8 border-l-2 border-amber/30 pl-3" aria-label="Recent activity">
-                <p className="font-mono text-[10px] uppercase tracking-widest text-ink-dim">recent activity</p>
                 <p className="mt-1 font-mono text-xs text-ink-muted">
                   Last run: {recentSnapshot.compute_instance ?? "compute unavailable"}
                   {recentSnapshot.database_engine ? ` + ${recentSnapshot.database_engine}` : ""}
@@ -384,7 +336,6 @@ export default function Home() {
                 </p>
               </div>
             )}
-            <PipelinePreview />
           </section>
         )}
 

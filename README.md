@@ -3,6 +3,10 @@
 [![Backend Tests](https://github.com/PRITIK03/Infra-Mind/actions/workflows/backend-tests.yml/badge.svg)](https://github.com/PRITIK03/Infra-Mind/actions/workflows/backend-tests.yml)
 [![Frontend Tests](https://github.com/PRITIK03/Infra-Mind/actions/workflows/frontend-tests.yml/badge.svg)](https://github.com/PRITIK03/Infra-Mind/actions/workflows/frontend-tests.yml)
 
+<p align="center">
+  <img src="docs/images/readme/landing.png" alt="InfraMind workload intake screen" width="900">
+</p>
+
 InfraMind sizes AWS infrastructure from workload details, a public GitHub repository, or both. It recommends compute, database, and cache resources using live catalog data and exports a Terraform starting point.
 
 Each new result includes a deployment handoff listing the generated resources and remaining work before applying infrastructure or serving traffic. It is useful for an initial architecture review and an engineering handoff. It does not deploy the application or certify its capacity or security. See [demo and release requirements](docs/DEPLOYMENT_READINESS.md).
@@ -13,6 +17,27 @@ This repository is a monorepo with two projects:
 aws-instance-advisor/   ← Python backend (FastAPI + LangGraph agent)
 aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
 ```
+
+## From a question to an infrastructure handoff
+
+InfraMind turns a rough workload description into a reviewable AWS plan: understand the workload, inspect an optional public repository, ground the recommendation against catalog data, then hand an engineer the concrete work still required before traffic goes live.
+
+<table>
+  <tr>
+    <td><img src="docs/images/readme/recommendation.png" alt="InfraMind architecture recommendation" width="100%"></td>
+    <td><img src="docs/images/readme/deployment-handoff.png" alt="InfraMind deployment handoff" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Architecture recommendation</sub></td>
+    <td align="center"><sub>Deployment handoff</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/readme/mobile-result.png" alt="InfraMind result on mobile" width="320">
+</p>
+
+The output is intentionally a starting point, not a magic approval: it shows the selected resources, price scope, consistency status, Terraform export, and the decisions an engineer must verify for the target account and workload.
 
 ---
 

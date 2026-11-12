@@ -15,7 +15,7 @@ Defines the structured data contracts between graph nodes:
 """
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -43,6 +43,14 @@ class ResourceProfile(str, Enum):
     GPU_BOUND = "gpu_bound"
     BALANCED = "balanced"
     UNKNOWN = "unknown"
+
+
+RdsEngine = Literal["PostgreSQL", "MySQL", "MariaDB"]
+DatabaseTarget = Literal[
+    "PostgreSQL", "MySQL", "MariaDB", "SQLite", "MongoDB", "DynamoDB", "Oracle", "SQL Server",
+    "external", "none",
+]
+SUPPORTED_RDS_ENGINES = ("PostgreSQL", "MySQL", "MariaDB")
 
 
 class UserRequirements(BaseModel):
@@ -96,6 +104,10 @@ class UserRequirements(BaseModel):
         default=None,
         description="Any other free-text context provided by the user.",
     )
+    database_engine: Optional[DatabaseTarget] = Field(
+        default=None,
+        description="Explicit production database target. Use 'external' to keep an existing external database, or 'none' for no database. Leave unset if unclear.",
+    )
     repo_url: Optional[str] = Field(
         default=None,
         description=(
@@ -128,11 +140,10 @@ class RepoAnalysis(BaseModel):
     """
     Lightweight, deterministic summary of a user-supplied GitHub repository.
 
-    Produced by repo_analyzer from the repository's root listing plus a few
-    manifest files.  This is deliberately a shallow signal — detected
-    language/framework, containerization, and notable dependencies — not a
-    full dependency graph or build analysis.  It informs the system design
-    reasoner but must never override explicitly user-stated requirements.
+    Compact context derived from repository evidence: language/framework,
+    containerization and notable dependencies. The legacy CLI analyzer uses
+    a smaller manifest scan. This is not a full dependency graph or build
+    analysis and must never override explicitly user-stated requirements.
     """
 
     detected_language: Optional[str] = Field(
@@ -141,7 +152,7 @@ class RepoAnalysis(BaseModel):
     )
     has_dockerfile: bool = Field(
         default=False,
-        description="True when the repository root contains a Dockerfile.",
+        description="True when a Dockerfile was detected in the repository.",
     )
     notable_dependencies: list[str] = Field(
         default_factory=list,
@@ -276,13 +287,14 @@ class DatabaseCandidate(BaseModel):
         default=None,
         description="On-demand hourly price for us-east-1, if available from the source.",
     )
+    hourly_prices_by_engine: dict[str, float] = Field(default_factory=dict)
 
 
 class CacheCandidate(BaseModel):
     """
     A single ElastiCache node type, specific to one engine.
-    Node types are not universal across engines — a given type may only
-    support Memcached, Redis, or Valkey, never all three.
+    The catalog can return the same node type for multiple engines, each with
+    its own price.
     """
 
     instance_type: str = Field(..., description="e.g. 'cache.t3.medium', 'cache.r6g.large'")
@@ -309,9 +321,8 @@ class DatabaseRecommendation(BaseModel):
     engine_suggestion: Optional[str] = Field(
         default=None,
         description=(
-            "Suggested DB engine (e.g. 'PostgreSQL', 'MySQL') — advisory reasoning, "
-            "not validated against a fixed list, since RDS instance types generally "
-            "support multiple engines."
+            "Suggested RDS engine: PostgreSQL, MySQL or MariaDB. The recommendation "
+            "module validates and canonicalizes it and preserves an explicit database target."
         ),
     )
     why: str
@@ -377,8 +388,8 @@ class EstimatedCost(BaseModel):
     """
     Estimated monthly on-demand cost for the recommended architecture.
 
-    All fields are Optional[float]: None means pricing data was unavailable
-    for that tier rather than a fabricated zero.
+    Unused tiers and tiers with unavailable pricing have no estimate.
+    A total is available only when every required tier is priced.
     """
 
     compute_monthly_low: Optional[float] = Field(
@@ -399,12 +410,26 @@ class EstimatedCost(BaseModel):
     )
     total_monthly_low: Optional[float] = Field(
         default=None,
-        description="Sum of compute low + database + cache (any None → None).",
+        description="Sum of compute low and all required database and cache tiers, when priced.",
     )
     total_monthly_high: Optional[float] = Field(
         default=None,
-        description="Sum of compute high + database + cache (any None → None).",
+        description="Sum of compute high and all required database and cache tiers, when priced.",
     )
+
+
+class DeploymentAction(BaseModel):
+    id: str
+    phase: Literal["before_apply", "before_traffic"]
+    title: str
+    detail: str
+
+
+class DeploymentHandoff(BaseModel):
+    """Generated resources and unfinished deployment work, derived without a model."""
+
+    generated_resources: list[str]
+    actions: list[DeploymentAction]
 
 
 class SystemDesignRecommendation(BaseModel):
@@ -424,6 +449,7 @@ class SystemDesignRecommendation(BaseModel):
             "reduces database load, why this instance count."
         ),
     )
+    deployment_handoff: Optional[DeploymentHandoff] = None
     repo_analysis_note: Optional[str] = Field(
         default=None,
         description=(
@@ -434,12 +460,12 @@ class SystemDesignRecommendation(BaseModel):
     estimated_cost: Optional[EstimatedCost] = Field(
         default=None,
         description=(
-            "Estimated monthly on-demand cost for the recommended architecture. "
-            "None when pricing data is unavailable."
+            "Estimated monthly on-demand instance subtotal for compute, RDS and cache. "
+            "Other AWS charges are excluded; missing required prices leave the subtotal unavailable."
         ),
     )
     # Grounding check results — populated by grounding_check node.
-    # grounding_passed=None means the check has not run yet (pre-grounding).
+    # grounding_passed=None means the check has not run or was unavailable.
     # grounding_passed=False means the check ran and found unresolved issues
     # after one bounded retry — the recommendation is visible but flagged.
     grounding_passed: Optional[bool] = Field(
@@ -447,13 +473,201 @@ class SystemDesignRecommendation(BaseModel):
         description=(
             "True if the grounding/consistency check passed; False if it failed "
             "after a bounded retry (recommendation flagged, not suppressed); "
-            "None if the check has not run yet."
+            "None if the check has not run or was unavailable."
         ),
     )
     grounding_notes: list[str] = Field(
         default_factory=list,
         description=(
             "Issues found by the grounding check that remain unresolved. "
-            "Empty when grounding_passed is True or None."
+            "Includes an explanation when verification was unavailable."
+        ),
+    )
+    consensus_result: Optional["ConsensusResult"] = Field(
+        default=None,
+        description=(
+            "Result of opt-in multi-model consensus mode.  None when consensus "
+            "was not requested.  Consensus is supplementary insight — the "
+            "recommendation itself is always the primary model's output used "
+            "for Terraform generation and grounding checks."
+        ),
+    )
+    # Deterministic ECS Fargate alternative — computed in plain Python from
+    # the already-recommended EC2 instance's vCPU/memory plus repo_analysis.
+    # Present ONLY when a Dockerfile was detected (repo analysis ran and
+    # found one); otherwise absent entirely.  No LLM call involved.
+    containerized_alternative: Optional["ContainerizedAlternative"] = Field(
+        default=None,
+        description=(
+            "ECS Fargate alternative to the compute tier, offered only when "
+            "the repository has a Dockerfile.  None when not applicable."
+        ),
+    )
+    # Deterministic Well-Architected-style review — computed in plain Python
+    # from fields already present on this recommendation plus TechnicalNeeds.
+    # Never produced by an LLM call.  Empty list when no rule fired.
+    well_architected_review: list["WellArchitectedFinding"] = Field(
+        default_factory=list,
+        description=(
+            "Deterministic Well-Architected-style findings derived only from "
+            "fields already present in the recommendation and technical_needs. "
+            "No LLM call is involved."
+        ),
+    )
+
+
+class ContainerizedAlternative(BaseModel):
+    """Deterministic ECS Fargate alternative to the EC2 compute tier.
+
+    Offered only for repo-analyzed requests with a real Dockerfile.  When
+    `recommended` is True, fargate_cpu_units/fargate_memory_mib hold the
+    nearest valid Fargate task size that meets or exceeds the recommended
+    EC2 instance's vCPU/memory (rounded up on both axes, per the AWS task
+    CPU/memory table).  When False — GPU workloads or instances too large
+    for the largest Fargate task — the size fields are None and `why`
+    explains the decision.
+    """
+
+    recommended: bool = Field(
+        ...,
+        description="Whether a Fargate alternative makes sense to offer at all.",
+    )
+    fargate_cpu_units: Optional[int] = Field(
+        default=None,
+        description=(
+            "Task-level CPU units (1024 = 1 vCPU).  None when not recommended."
+        ),
+    )
+    fargate_memory_mib: Optional[int] = Field(
+        default=None,
+        description="Task-level memory in MiB.  None when not recommended.",
+    )
+    why: str = Field(
+        ...,
+        description=(
+            "Templated explanation referencing the detected Dockerfile and the "
+            "EC2 sizing baseline it was matched against."
+        ),
+    )
+    trade_off: str = Field(
+        ...,
+        description=(
+            "Templated, even-handed summary of the real trade-offs — no "
+            "instance management and per-second billing versus less host "
+            "control and container start-up latency."
+        ),
+    )
+
+
+class ConsensusDisagreement(BaseModel):
+    """One tier on which the primary and consensus models disagreed."""
+
+    tier: str = Field(
+        ...,
+        description="Tier name that differed (compute, database, cache, load_balancer).",
+    )
+    primary_choice: str = Field(
+        ..., description="The primary model's choice for this tier."
+    )
+    secondary_choice: str = Field(
+        ..., description="The consensus model's choice for this tier."
+    )
+
+
+class ConsensusResult(BaseModel):
+    """Outcome of opt-in multi-model consensus mode.
+
+    The primary model's SystemDesignRecommendation is re-generated once
+    against a second model using the identical technical_needs/candidates,
+    then compared tier-by-tier DETERMINISTICALLY (plain string comparison
+    of instance_type / engine / load_balancer_type — never a third LLM
+    call to judge similarity).
+
+    Agreement levels are counts over the four tiers (compute, database,
+    cache, load_balancer):
+      - "full":                    0 tiers disagree
+      - "partial":                 1–2 tiers disagree
+      - "significant_disagreement": 3+ tiers disagree
+    """
+
+    enabled: bool = Field(
+        ...,
+        description=(
+            "True when a consensus comparison actually ran.  False when "
+            "consensus was requested but declined (no model configured) — "
+            "see `note` for the human-readable reason."
+        ),
+    )
+    primary_model: str = Field(
+        ..., description="Model slug used for the primary recommendation."
+    )
+    secondary_model: str = Field(
+        ...,
+        description=(
+            "Model slug used for the second opinion.  Empty when consensus "
+            "did not run (enabled=False)."
+        ),
+    )
+    agreement_level: Optional[Literal["full", "partial", "significant_disagreement"]] = Field(
+        default=None,
+        description=(
+            "Deterministic outcome of the tier comparison.  None when consensus "
+            "did not run (enabled=False) since there is nothing to compare."
+        ),
+    )
+    agreements: list[str] = Field(
+        default_factory=list,
+        description="Tier names where both models chose identically.",
+    )
+    disagreements: list[ConsensusDisagreement] = Field(
+        default_factory=list,
+        description="Tiers where the models chose differently.",
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable note, e.g. why consensus was declined when "
+            "requested but no consensus model is configured.  None on the "
+            "happy path."
+        ),
+    )
+
+
+class WellArchitectedFinding(BaseModel):
+    """One deterministic Well-Architected-style finding.
+
+    Produced by app.analysis.well_architected.build_well_architected_review,
+    which is a pure rule set over fields already present in
+    SystemDesignRecommendation and TechnicalNeeds.  No LLM call is involved,
+    so every finding is directly traceable to a specific field value and the
+    result is fully reproducible.
+
+    severity is intentionally a two-value scale: "info" for context worth
+    knowing, "warning" for something that warrants attention before applying.
+    """
+
+    pillar: Literal[
+        "reliability",
+        "security",
+        "cost_optimization",
+        "performance_efficiency",
+        "operational_excellence",
+    ] = Field(
+        ...,
+        description="Which Well-Architected pillar this finding belongs to.",
+    )
+    severity: Literal["info", "warning"] = Field(
+        ...,
+        description=(
+            "'info' = worth knowing; 'warning' = warrants attention before "
+            "deploying.  Deliberately only two levels — these are mechanical "
+            "observations, not graded judgments."
+        ),
+    )
+    message: str = Field(
+        ...,
+        description=(
+            "Short, specific statement of the observation, naming the field "
+            "values that triggered it."
         ),
     )

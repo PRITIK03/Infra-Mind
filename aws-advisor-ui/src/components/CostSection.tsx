@@ -84,7 +84,7 @@ export function CostSection({ cost, databaseNeeded, cacheNeeded }: Props) {
       </div>
 
       <div className="min-w-0 flex justify-between gap-4 mt-4 pt-3 border-t border-border-subtle">
-        <span className="font-mono text-xs text-ink-dim uppercase tracking-wider">total</span>
+        <span className="font-mono text-xs text-ink-muted uppercase tracking-wider">instance subtotal</span>
         <CopyableValue value={totalUnavailable ? "pricing unavailable" : totalDisplay} className="min-w-0 text-right break-words font-mono text-sm text-amber">
           {!totalUnavailable && cost.total_monthly_low != null && cost.total_monthly_high != null
             ? cost.total_monthly_low === cost.total_monthly_high
@@ -96,8 +96,8 @@ export function CostSection({ cost, databaseNeeded, cacheNeeded }: Props) {
       </div>
 
       <p className="font-sans text-xs text-ink-dim leading-relaxed mt-3">
-        On-demand only. Based on us-east-1 hourly rates × 730 hours. Does not
-        include reserved/spot discounts, data transfer, or support plans.
+        us-east-1 · on-demand · 730 hours. Excludes load balancers, storage,
+        I/O, backups, network, logs, secrets, taxes and support.
       </p>
     </section>
   );

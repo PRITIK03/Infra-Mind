@@ -15,31 +15,17 @@ _AI_WARNING_BLOCK = """\
  *  aws-instance-advisor as a STARTING POINT, not a final
  *  deployment.
  *
- *  YOU MUST REVIEW THE FOLLOWING BEFORE `terraform apply`:
- *
- *    - SECURITY: Security groups are deliberately minimal —
- *      they are a baseline and should be tightened. Database credentials
- *      use a placeholder password below — replace with a secret
- *      manager or rotate to real values.
- *
- *    - COST: Instance sizes were chosen for the described workload.
- *      verify hourly/monthly estimates yourself before applying.
- *
- *    - CORRECTNESS: Resource names, ports, CIDRs, and engine
- *      mappings were mechanically translated. spot-check each block
- *      against the live AWS console / terraform plan output.
- *
- *    - CUSTOM VPC: This template assumes the default VPC. If you
- *      need private subnets, NAT gateways, etc., extend
- *      replace the data "aws_vpc" "default" references.
- *
- *  DO NOT apply without reading the plan output carefully.
+ *  The template assumes the account's default VPC and a stock
+ *  Amazon Linux 2023 image. Before applying, configure the network,
+ *  workload bootstrap, TLS, IAM, scaling policies, and monitoring.
+ *  Review resource availability, costs, and the Terraform plan in
+ *  the target AWS account and region.
  * ============================================================
  */
 """
 
 
-def _header() -> str:
+def _header(compute_instance: str) -> str:
     return f"""\
 terraform {{
   required_providers {{
@@ -63,6 +49,15 @@ data "aws_subnets" "default" {{
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }}
+
+  filter {{
+    name   = "default-for-az"
+    values = ["true"]
+  }}
+}}
+
+data "aws_ec2_instance_type" "app" {{
+  instance_type = "{compute_instance}"
 }}
 
 data "aws_ami" "app" {{
@@ -71,15 +66,16 @@ data "aws_ami" "app" {{
 
   filter {{
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+    values = ["al2023-ami-2023.*"]
+  }}
+
+  filter {{
+    name   = "architecture"
+    values = data.aws_ec2_instance_type.app.supported_architectures
   }}
 }}
 """
 
 
 def _comment_block(text: str) -> str:
-    lines = text.rstrip()
-    wrapped_lines = []
-    for ln in lines.split("\n"):
-        wrapped_lines.append(f" * {ln}" if ln else " *")
-    return "/*\n" + "\n".join(wrapped_lines) + "\n */"
+    return "\n".join(f"# {line}" if line else "#" for line in text.splitlines())

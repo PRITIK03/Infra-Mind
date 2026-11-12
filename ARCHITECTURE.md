@@ -1,0 +1,149 @@
+# System Architecture & Technical Decisions
+
+## 1. What This Project Actually Is (and Isn't)
+
+InfraMind uses LangGraph, FastAPI, and Next.js to size AWS infrastructure from workload details, a public GitHub repository, or both. It grounds recommended compute, database, and cache sizes in Vantage catalog data, runs deterministic architecture checks, and exports Terraform for review in the target AWS account.
+
+---
+
+## 2. System Architecture & Component Interactions
+
+```mermaid
+flowchart TD
+    subgraph UI ["Frontend Client (Next.js 16 / React 19)"]
+        Client[Browser UI]
+        HookPoller[useJobPoller Hook]
+        SSEConsumer[EventSource SSE Client]
+    end
+
+    subgraph API ["API & Transport Layer (FastAPI)"]
+        StreamLimiter[InMemoryConcurrentStreamLimiter<br/><i>Per-IP Cap: 5 streams</i>]
+        RateLimiter[InMemoryRateLimiter<br/><i>Sliding Window: 5 req/min</i>]
+        HealthEndpoint["/api/health & /api/health/ready<br/><i>Zero-outbound readiness audit</i>"]
+        JobRunner[JobRunner & Watchdog<br/><i>ThreadPoolExecutor + Wall Clock Timeout</i>]
+        HasRepo{GitHub repository supplied?}
+        RepoScan[Public repository scan<br/><i>Commit-pinned inventory and findings</i>]
+        EventBus[JobEventBus<br/><i>PubSub per Job ID</i>]
+    end
+
+    subgraph Store ["State & Persistence Layer (Dual-Store Pattern)"]
+        StoreBackend{REDIS_URL configured?}
+        MemoryStore[InMemoryJobStore<br/><i>Process-local dict fallback</i>]
+        RedisStore[RedisJobStore<br/><i>TTL-backed shared state</i>]
+    end
+
+    subgraph Graph ["LangGraph Multi-Tier Reasoning Pipeline"]
+        Collect[1. collect_requirements]
+        ValReq[2. validate_requirements]
+        ReasonSys[3. reason_system_design<br/><i>Deterministic Bridges</i>]
+        ResCompute[4. research_instances<br/><i>Live Vantage API</i>]
+        ResDB[5. research_database<br/><i>RDS Catalog</i>]
+        ResCache[6. research_cache<br/><i>ElastiCache Catalog</i>]
+        Holistic[7. holistic_recommend<br/><i>Structured Synthesis</i>]
+        GroundCheck[8. grounding_check<br/><i>Anti-Hallucination Audit</i>]
+        ConsensusRouter{Consensus requested?}
+        ConsensusCheck[9. consensus_check<br/><i>2nd Model Cross-Validation</i>]
+        GenTF[10. generate_terraform<br/><i>Deterministic HCL Builder</i>]
+    end
+
+    subgraph Ext ["External Integrations (Graceful-Optional)"]
+        VantageAPI[(Vantage EC2 API)]
+        TavilySearch[(Tavily Web Search)]
+        GitHub[(GitHub REST and archives)]
+        Sentry[(Sentry DSN)]
+    end
+
+    %% Interactions
+    Client -->|SSE Preferred| SSEConsumer
+    Client -->|Fallback Polling| HookPoller
+    SSEConsumer -->|GET /api/recommend/:id/stream| StreamLimiter --> EventBus
+    HookPoller -->|GET /api/recommend/:id| JobRunner
+
+    JobRunner --> StoreBackend
+    StoreBackend -->|Yes| RedisStore
+    StoreBackend -->|No / Offline| MemoryStore
+
+    JobRunner -->|Spawn background thread| HasRepo
+    HasRepo -->|Yes| RepoScan
+    HasRepo -->|No| Collect
+    RepoScan -.->|Read pinned commit| GitHub
+    RepoScan -->|Sanitized facts or fallback| Collect
+    Collect --> ValReq
+
+    ValReq -->|Missing fields| Client
+    ValReq -->|Complete| ReasonSys
+    ReasonSys -.->|Optional search| TavilySearch
+    ReasonSys --> ResCompute
+    ResCompute -->|Query live pricing/vCPU| VantageAPI
+    ResCompute --> ResDB --> ResCache --> Holistic
+    Holistic --> GroundCheck
+
+    GroundCheck -->|Contradiction detected| Holistic
+    GroundCheck -->|Passed| ConsensusRouter
+    ConsensusRouter -->|Yes| ConsensusCheck
+    ConsensusRouter -->|No / Disabled| GenTF
+    ConsensusCheck --> GenTF
+    GenTF --> EventBus
+    GenTF --> StoreBackend
+
+    API -.->|Unhandled exceptions| Sentry
+```
+
+---
+
+## 3. Notable Technical Decisions
+
+### Decision 1: Deterministic Terraform Generation over LLM Code Generation
+* **Decision:** Terraform (HCL) files (`main.tf`, `variables.tf`, `outputs.tf`) are synthesized deterministically using strictly typed template and string builder modules (`app.agent.nodes.terraform.*`) rather than asking the LLM to write raw HCL code.
+* **Alternative Considered:** Prompting the LLM to output freeform `.tf` code blocks or structured JSON representations of HCL.
+* **Trade-offs.** Templates give predictable resource and security group wiring, with no extra model call. The AWS provider constraint specifies a minimum version (`>= 5.73.0`). The default VPC and stock AMI make the export a starting point for [workload-specific deployment](README.md#using-the-terraform-export).
+
+### Decision 2: Server-Sent Events (SSE) over WebSockets for Real-Time Progress
+* **Decision:** Streaming real-time job progress via HTTP Server-Sent Events (`GET /api/recommend/{job_id}/stream`) with automated client-side fallback to standard HTTP polling (`GET /api/recommend/{job_id}`).
+* **Alternative Considered:** Bidirectional WebSockets (`ws://` / `wss://`).
+* **Why Rejected:** The interaction is naturally unidirectional: the server pushes progress while the client replies through HTTP `POST /answer` or `POST /followup`. SSE provides browser streaming without a WebSocket upgrade and retains a polling fallback. Proxy buffering and idle timeouts still need configuration. In-flight job ownership requires worker affinity with either transport under the current persistence design.
+
+### Decision 3: Anti-Hallucination Grounding & Self-Verification Pass
+* **Decision:** An explicit `grounding_check` node verifies logical coherence between the synthesized `system_design_recommendation` and the extracted `technical_needs` before generating infrastructure code. If contradictions are found (e.g. praising horizontal auto-scaling while min=max=1), the prompt is automatically reconstructed with specific corrective instructions and re-run once.
+* **Shared recommendation module:** Initial synthesis, consensus and grounding repair use `build_system_design_recommendation`. It owns catalog membership, required-tier validation, explicit database targets, canonical engine names, prices and deterministic enrichment. Grounding repair gets one synthesis attempt and no nested catalog retry. Invalid repair output is discarded in favor of the original recommendation, with the failure visible.
+* **Verification status:** A model/parser failure leaves `grounding_passed=null` with an unavailable note. It is never reported as a pass. Findings are refreshed after the final check, so the report and its verification status agree.
+* **Alternative Considered:** Relying solely on large system prompts to prevent hallucinations during the initial synthesis step.
+* **Why Rejected:** Complex multi-tier reasoning frequently exhibits subtle cognitive drift where individual tier choices contradict global workload invariants. An isolated audit step catches and repairs contradictions with a strict one-retry bound, surfacing a visible warning if the check still fails rather than crashing or returning silent corruptions.
+
+### Decision 4: Dual-Store Pattern & Selective State Persistence
+* **Decision:** Only user-facing job metadata and terminal results (`job_id`, `status`, `current_stage`, `result`, `retry_info`) are persisted to Redis / memory. The internal executing `AgentState` is kept in process-local memory during execution.
+* **Alternative Considered:** Full serialization of the entire LangGraph execution state and candidate lists into Redis on every node transition.
+* **Why Rejected:** Full graph state contains large ephemeral candidate sets from live API calls that are redundant to persist. Furthermore, in-flight multi-turn requirement loops rely on the active thread context. The dual-store contract (`JobStoreBackend`) guarantees that completed jobs and public API responses survive process restarts and can be read by any horizontal replica, while avoiding unnecessary state serialization bottlenecks.
+
+### Decision 5: Multi-Model Consensus Scoping (Isolated Verification vs Full Pipeline Re-Run)
+* **Decision:** Opt-in consensus mode (`consensus: true`) re-runs **only** the final `holistic_recommend` synthesis against an alternative model (e.g. `CONSENSUS_MODEL`), keeping the upstream requirement collection, system design reasoning, and Vantage live-data candidates identical. Agreement is then evaluated deterministically across tiers.
+* **Alternative Considered:** Duplicating and re-executing the entire LangGraph pipeline from start to finish with the second model.
+* **Why Rejected:** Re-running upstream nodes repeats catalog queries, repository scans and research. Consensus instead reuses their results for one secondary synthesis step, with at most one catalog-correction attempt. Provider failover and structured-output parsing may also retry. The comparison itself is deterministic and makes no model or AWS calls.
+
+### Decision 6: Graceful-Optional External Integrations
+* **Decision:** External dependencies (Redis, Sentry, GitHub MCP, Tavily Web Search, Consensus Model) are strictly optional enhancements. If any service is missing or fails at startup, the system gracefully degrades to process-local defaults (in-memory store, local logging, baseline heuristics) and surfaces integration readiness in `GET /api/health/ready`.
+* **Alternative Considered:** Hard startup failure or throwing fatal exceptions whenever an optional integration is unreachable.
+* **Why Rejected:** Requiring five distinct external cloud services makes local development, testing, and containerized deployment fragile. A developer needs only `API_KEY`, `BASE_URL`, `MODEL_NAME`, and `VANTAGE_API_KEY` to run a fully functional system.
+
+---
+
+## 4. Operational Invariants & Resiliency Guardrails
+
+1. **Per-IP SSE Concurrency Limiter:** Bounded at 5 concurrent streams per client IP via `InMemoryConcurrentStreamLimiter` to prevent socket exhaustion attacks on the ASGI event loop.
+2. **Multi-Key LLM Failover:** Primary -> Secondary (`API_KEY_2`) -> Tertiary (`API_KEY_3`) automatic failover on HTTP 429 rate limit exhaustion.
+3. **Structured Output Repair:** JSON Schema-injected prompts with automatic fallback to LangChain JSON-mode and Pydantic validation repairs.
+4. **Deterministic Well-Architected Review:** Reliability and cost findings evaluated via static rules without non-deterministic LLM variance.
+5. **Deployment handoff:** The terminal export adds an optional typed handoff from existing requirements, repository evidence, technical needs and recommendation data. It lists resources and unfinished work; it is not a readiness score. The browser, Markdown/PDF and web ZIP reuse these facts. Older results without the field still render. Repository share allowlisting excludes the handoff.
+
+---
+
+## 5. Verification Status & Known Limitations
+
+* **Product scope:** Catalog-backed sizing and an infrastructure scaffold support an engineering review. Application bootstrap, TLS, private network design, scaling policies and operational configuration remain workload-specific work. CloudFormation export is not implemented. Follow [the release checklist](docs/DEPLOYMENT_READINESS.md) before public use.
+
+* **Repository-backed HTTP jobs:** A validated repository reference is checked before the graph makes model calls. The scanner inventories one public commit, verifies file content against its Git blob, and keeps raw source out of graph state. Clarifications reuse the same findings. The report distinguishes expected exclusions from incomplete coverage and records advisory-check status separately.
+* **Job and share access:** The original job ID is an access capability. Repository-backed runs are excluded from public history. A separate public share ID resolves to an allowlisted AWS summary, without the original job ID, repository findings, prompts, or follow-up history.
+
+* **SSE / Browser Verification:** The raw SSE path was verified against the backend. Playwright now exercises live job updates and the polling fallback in Chromium against a local production frontend build and a fixture-backed API. Verification against deployed infrastructure is a separate release check.
+* **Terraform validation.** Six generated configurations passed `terraform validate` with AWS provider versions 5.73.0 and 6.73.0, covering ALB, Arm EC2 with NLB, RDS, and all three cache engines. Resource availability and deployment still require a plan in the target AWS account and region.
+

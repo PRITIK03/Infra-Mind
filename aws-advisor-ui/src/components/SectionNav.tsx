@@ -13,23 +13,27 @@ interface Props {
   sdr: SystemDesignRecommendation;
   technicalNeeds?: TechnicalNeeds | null;
   hasTerraform?: boolean;
+  hasRepository?: boolean;
 }
 
-export function SectionNav({ sdr, technicalNeeds, hasTerraform = false }: Props) {
+export function SectionNav({ sdr, technicalNeeds, hasTerraform = false, hasRepository = false }: Props) {
   const [sections, setSections] = useState<Section[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   useEffect(() => {
     const all: Section[] = [
+      { id: "deployment", label: "Deployment", visible: !!sdr.deployment_handoff },
       { id: "cost", label: "Cost", visible: !!sdr.estimated_cost },
       { id: "compute", label: "Compute", visible: true },
       { id: "database", label: "Database", visible: true },
       { id: "cache", label: "Cache", visible: true },
       { id: "load-balancer", label: "Load Balancer", visible: true },
+      { id: "repository", label: "Repository analysis", visible: hasRepository },
+      { id: "consensus", label: "Consensus", visible: !!sdr.consensus_result?.enabled },
       { id: "terraform", label: "Terraform", visible: hasTerraform },
     ];
     setSections(all.filter((s) => s.visible));
-  }, [hasTerraform, sdr]);
+  }, [hasRepository, hasTerraform, sdr]);
 
   useEffect(() => {
     if (!technicalNeeds) return;
@@ -59,7 +63,7 @@ export function SectionNav({ sdr, technicalNeeds, hasTerraform = false }: Props)
   const handleClick = (id: string) => {
     const el = document.getElementById(id);
     if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" });
     }
   };
 

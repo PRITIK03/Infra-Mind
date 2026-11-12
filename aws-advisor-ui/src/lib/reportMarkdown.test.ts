@@ -64,7 +64,8 @@ describe("recommendationToMarkdown", () => {
     expect(markdown).toContain("Users -> t3.micro -> db.t3.small");
     expect(markdown).toContain("Stated registered users: 500");
     expect(markdown).toContain("Cache: not needed");
-    expect(markdown).toContain("Total: $38 - $42");
+    expect(markdown).toContain("Instance subtotal: $38 - $42");
+    expect(markdown).toContain("Excludes load balancers");
     expect(markdown).not.toContain("undefined");
   });
 
@@ -93,5 +94,38 @@ describe("recommendationToMarkdown", () => {
 
     expect(markdown).toContain("Estimated concurrency: 1 concurrent job/worker slot");
     expect(markdown).toContain(`Why: ${databaseWhy}`);
+  });
+
+  it("includes repository coverage, assumptions, and a commit-pinned evidence link", () => {
+    const commit = "a".repeat(40);
+    const markdown = recommendationToMarkdown({
+      sdr: recommendation,
+      repositoryAssumptions: ["Provisional sizing assumes 10 peak requests per second."],
+      repository: {
+        repository: { owner: "acme", name: "service" },
+        commit_sha: commit,
+        coverage: "partial",
+        files_discovered: 3,
+        files_analyzed: 2,
+        skipped: { unreadable: 1 },
+        limitations: ["One file could not be read."],
+        stack: ["FastAPI"],
+        databases: ["PostgreSQL"],
+        workflows: [],
+        workload_type: "api_service",
+        has_dockerfile: false,
+        local_inference: false,
+        hosted_inference: false,
+        model_artifacts: 0,
+        advisory_status: "not_configured",
+        findings: [{
+          category: "database", title: "PostgreSQL referenced", action: "Verify the production data store.",
+          path: "data files/config.py", line: 12, severity: "info", confidence: "observed",
+        }],
+      },
+    });
+    expect(markdown).toContain("partial, 2 of 3 tracked files read");
+    expect(markdown).toContain("Provisional sizing assumes 10 peak requests per second.");
+    expect(markdown).toContain(`https://github.com/acme/service/blob/${commit}/data%20files/config.py#L12`);
   });
 });

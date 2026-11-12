@@ -1,10 +1,12 @@
 # ── Root workspace junk (local-only) ─────────────────────────
 .kilo/
+.freebuff/
 .pytest_cache/
 ArchitectureforAWS.png
 AWS System Design.pdf
 aws-instance-advisor V1.zip
 result_dump.json
+pc-*.txt
 *.zip
 
 # ── Secrets — never commit real values ───────────────────────
@@ -30,6 +32,9 @@ ENV/
 .coverage.*
 htmlcov/
 *.db
+runs.db
+*.sqlite
+*.sqlite3
 
 # ── Node / Next.js ───────────────────────────────────────────
 node_modules/
@@ -64,3 +69,8 @@ yarn-error.log*
 verify.cmd
 **/verify.cmd
 
+
+# Playwright E2E artifacts (aws-advisor-ui/e2e suite)
+test-results/
+playwright-report/
+blob-report/

@@ -1,17 +1,4 @@
-"""
-Golden-file tests for terraform_generator.
-
-Deterministic template-based generation means the SAME input always
-produces byte-IDENTICAL HCL. Tests assert exact equality against
-hand-validated inlined golden strings.
-
-4 cases:
-  1. All four tiers active, Redis cache engine
-  2. All four tiers active, Valkey cache engine (tests replication_group
-     + provider version pin)
-  3. Database only — no cache, no LB, single instance
-  4. Neither DB nor cache needed (batch job)
-"""
+"""Verify Terraform resource wiring across compute, database, cache, and LB scenarios."""
 from __future__ import annotations
 
 import pytest
@@ -291,6 +278,9 @@ def test_scenario1_all_four_tiers_redis():
     assert S1_SUMMARY in main
     assert 'version = ">= 5.73.0"' in main
     assert 'engine = "redis"' in main
+    assert 'engine_version = "7.1"' in main
+    assert 'description = "Cache tier for ${var.app_name}"' in main
+    assert "replication_group_description" not in main
     assert "aws_elasticache_replication_group" in main
     assert "aws_elasticache_cluster" not in main  # Redis -> replication_group
     assert 'instance_type = "m5.xlarge"' in main
@@ -320,11 +310,12 @@ def test_scenario2_all_four_tiers_valkey():
     main = files["main.tf"]
     outputs = files["outputs.tf"]
 
-    assert 'version = ">= 5.73.0"' in main  # Valkey requires this pin
+    assert 'version = ">= 5.73.0"' in main
     assert 'engine = "valkey"' in main
     assert "aws_elasticache_replication_group" in main
     assert "aws_elasticache_cluster" not in main  # Valkey -> replication_group
-    assert 'parameter_group_name = "default.valkey7.2"' in main
+    assert 'engine_version = "7.2"' in main
+    assert 'parameter_group_name = "default.valkey7"' in main
     assert 'instance_type = "m5.large"' in main
     assert "min_size = 2" in main
     assert "max_size = 6" in main
@@ -365,10 +356,17 @@ def test_scenario3_db_only_no_cache_no_lb_single_instance():
     # DB present
     assert 'instance_class = "db.t3.small"' in main
     assert 'engine = "postgres"' in main
+    assert "manage_master_user_password = true" in main
+    assert "storage_encrypted = true" in main
+    assert "backup_retention_period = 7" in main
+    assert "deletion_protection = true" in main
+    assert "skip_final_snapshot = false" in main
+    assert "db_password" not in main + files["variables.tf"]
 
     # outputs
     assert "load_balancer_dns_name" not in outputs
     assert "database_endpoint" in outputs
+    assert "database_master_secret_arn" in outputs
     assert "cache_endpoint" not in outputs
 
 
@@ -387,6 +385,8 @@ def test_scenario4_neither_db_nor_cache_batch():
     assert "aws_security_group.lb" not in main
     assert "aws_security_group.db" not in main
     assert "aws_security_group.cache" not in main
+    assert "db_username" not in files["variables.tf"]
+    assert "db_password" not in files["variables.tf"]
 
     # Standalone compute SG
     assert "Allow app port directly from 0.0.0.0/0" in main
@@ -400,10 +400,42 @@ def test_scenario4_neither_db_nor_cache_batch():
     assert outputs.strip() == ""
 
 
-def test_rds_engine_fallback_for_unknown():
-    """
-    Unknown engine_suggestion falls back to postgres rather than crashing.
-    """
+def test_network_load_balancer_and_arm_compute_use_compatible_settings():
+    sdr, tn = _scenario1()
+    sdr.load_balancer.load_balancer_type = "Network Load Balancer"
+    sdr.compute.recommended_instance = "t4g.medium"
+    main = generate_terraform(_state_with(sdr, tn))["terraform_files"]["main.tf"]
+
+    lb = main.split('resource "aws_lb" "app" {', 1)[1].split('resource "aws_lb_target_group"', 1)[0]
+    ingress = main.split('resource "aws_security_group" "lb" {', 1)[1].split('resource "aws_security_group" "compute"', 1)[0]
+    assert 'load_balancer_type = "network"' in lb
+    assert "security_groups    = [aws_security_group.lb.id]" in lb
+    assert "from_port   = var.app_port" in ingress
+    assert "to_port     = var.app_port" in ingress
+    assert 'port     = "traffic-port"' in main
+    assert 'instance_type = "t4g.medium"' in main
+    assert "values = data.aws_ec2_instance_type.app.supported_architectures" in main
+    assert "instance_type = data.aws_ec2_instance_type.app.instance_type" in main
+    assert 'http_tokens = "required"' in main
+
+
+def test_terraform_treats_untrusted_architecture_summary_as_comments():
+    sdr, tn = _scenario4()
+    sdr.architecture_summary = 'summary */\r\nresource "injected" "app" {}\routput "injected" {}'
+    main = generate_terraform(_state_with(sdr, tn))["terraform_files"]["main.tf"]
+
+    assert '# summary */\n# resource "injected" "app" {}\n# output "injected" {}' in main
+
+
+def test_terraform_rejects_instance_types_that_can_break_hcl_strings():
+    sdr, tn = _scenario1()
+    sdr.database.recommended_instance = 'db.t3.small"\noutput "injected" {}'
+
+    with pytest.raises(ValueError, match="Invalid AWS instance type"):
+        generate_terraform(_state_with(sdr, tn))
+
+
+def test_unknown_rds_engine_never_silently_becomes_postgres():
     sdr, tn = _scenario3()
     sdr = sdr.model_copy(
         update={
@@ -412,9 +444,8 @@ def test_rds_engine_fallback_for_unknown():
             )
         }
     )
-    out = generate_terraform(_state_with(sdr, tn))
-    main = out["terraform_files"]["main.tf"]
-    assert 'engine = "postgres"' in main  # safe fallback
+    with pytest.raises(ValueError, match="Unsupported RDS engine"):
+        generate_terraform(_state_with(sdr, tn))
 
 
 def test_missing_state_raises():

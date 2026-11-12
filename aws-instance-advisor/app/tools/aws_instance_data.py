@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from app.config import ConfigError, get_vantage_settings
-from app.models.schemas import CacheCandidate, CacheEngine, DatabaseCandidate, InstanceCandidate
+from app.models.schemas import SUPPORTED_RDS_ENGINES, CacheCandidate, CacheEngine, DatabaseCandidate, InstanceCandidate
 
 
 class InstanceDataUnavailableError(RuntimeError):
@@ -242,6 +242,11 @@ def fetch_rds_instance_data() -> list[DatabaseCandidate]:
                     or "unknown"
                 ),
                 hourly_price_usd=_extract_rds_hourly_price(item.get("pricing")),
+                hourly_prices_by_engine={
+                    engine: price
+                    for engine in SUPPORTED_RDS_ENGINES
+                    if (price := _extract_hourly_price(item.get("pricing"), _DEFAULT_REGION, engine)) is not None
+                },
             )
         )
 

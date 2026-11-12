@@ -20,8 +20,8 @@ const config: Config = {
         "amber-dim": "#B5792A", // darker amber for hover states
         "border-subtle": "rgba(237,237,234,0.10)", // thin rule color
         "border-faint": "rgba(237,237,234,0.05)",
-        "ink-muted": "rgba(237,237,234,0.45)", // secondary text
-        "ink-dim": "rgba(237,237,234,0.25)",   // tertiary / disabled
+        "ink-muted": "rgba(237,237,234,0.65)", // readable secondary text
+        "ink-dim": "rgba(237,237,234,0.50)",   // tertiary labels on canvas
         "stage-done": "rgba(232,163,61,0.18)", // amber tint for completed stages
       },
       fontFamily: {

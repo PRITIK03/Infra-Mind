@@ -46,9 +46,15 @@ describe("TerraformViewer", () => {
     });
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    render(<TerraformViewer files={files} />);
+    render(<TerraformViewer files={files} recommendation={{
+      ...recommendation,
+      deployment_handoff: {
+        generated_resources: ["EC2 t3.micro"],
+        actions: [{ id: "startup", phase: "before_apply", title: "Supply the application", detail: "The scaffold does not deploy application code." }],
+      },
+    }} />);
 
-    await user.click(screen.getByRole("button", { name: "Download Terraform files as a zip" }));
+    await user.click(screen.getByRole("button", { name: /download \.zip/i }));
 
     await waitFor(async () => {
       expect(downloadedBlob).toBeDefined();
@@ -56,6 +62,7 @@ describe("TerraformViewer", () => {
       expect(await zip.file("terraform/main.tf")!.async("string")).toBe(files["main.tf"]);
       expect(await zip.file("terraform/variables.tf")!.async("string")).toBe(files["variables.tf"]);
       expect(await zip.file("terraform/outputs.tf")!.async("string")).toBe(files["outputs.tf"]);
+      expect(await zip.file("terraform/DEPLOYMENT.md")!.async("string")).toContain("The scaffold does not deploy application code.");
     });
   });
 

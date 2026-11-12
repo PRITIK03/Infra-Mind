@@ -1,14 +1,20 @@
 import type {
   EstimatedCost,
+  RepositoryProgress,
+  RepositoryReport,
   SystemDesignRecommendation,
   TechnicalNeeds,
   UserRequirements,
 } from "./types";
 
-interface ReportData {
+export interface ReportData {
   sdr: SystemDesignRecommendation;
   technicalNeeds?: TechnicalNeeds;
   userRequirements?: UserRequirements;
+  repository?: RepositoryReport;
+  repositoryProgress?: RepositoryProgress;
+  repositoryAssumptions?: string[];
+  repositoryDeploymentNotes?: string[];
 }
 
 export function formatConcurrency(
@@ -70,7 +76,7 @@ function addTier(
 }
 
 function addCost(lines: string[], cost: EstimatedCost, sdr: SystemDesignRecommendation) {
-  lines.push("## Estimated Monthly Cost");
+  lines.push("## Monthly Instance Estimate");
   const compute = costRange(cost.compute_monthly_low, cost.compute_monthly_high);
   addField(lines, "Compute", compute);
   if (sdr.database.needed) {
@@ -83,13 +89,33 @@ function addCost(lines: string[], cost: EstimatedCost, sdr: SystemDesignRecommen
   } else {
     lines.push("- Cache: not needed");
   }
-  addField(lines, "Total", costRange(cost.total_monthly_low, cost.total_monthly_high));
-  lines.push("");
+  addField(lines, "Instance subtotal", costRange(cost.total_monthly_low, cost.total_monthly_high) ?? "pricing unavailable");
+  lines.push("", "us-east-1 on-demand rates × 730 hours. Excludes load balancers, storage, I/O, backups, network, logs, secrets, taxes and support.", "");
 }
 
-export function recommendationToMarkdown({ sdr, technicalNeeds, userRequirements }: ReportData): string {
+export function recommendationToMarkdown({
+  sdr, technicalNeeds, userRequirements, repository, repositoryProgress,
+  repositoryAssumptions, repositoryDeploymentNotes,
+}: ReportData): string {
   const lines = ["# AWS Instance Recommendation", ""];
   lines.push("## Architecture Summary", "", sdr.architecture_summary, "");
+
+  if (sdr.grounding_passed != null || sdr.grounding_notes?.length) {
+    lines.push(`Consistency check: ${sdr.grounding_passed ? "passed" : sdr.grounding_passed == null ? "unavailable" : "review required"}`, "");
+    for (const note of sdr.grounding_notes ?? []) lines.push(`- ${note}`);
+    lines.push("");
+  }
+  if (sdr.deployment_handoff) {
+    lines.push("## Deployment Handoff", "", "### Terraform Scaffold", "");
+    for (const resource of sdr.deployment_handoff.generated_resources) lines.push(`- ${resource}`);
+    for (const phase of ["before_apply", "before_traffic"] as const) {
+      const actions = sdr.deployment_handoff.actions.filter((action) => action.phase === phase);
+      if (!actions.length) continue;
+      lines.push("", phase === "before_apply" ? "### Before Applying" : "### Before Serving Traffic", "");
+      for (const action of actions) lines.push(`- **${action.title}.** ${action.detail}`);
+    }
+    lines.push("");
+  }
 
   lines.push("## Topology", "");
   const topology = ["Users"];
@@ -122,6 +148,15 @@ export function recommendationToMarkdown({ sdr, technicalNeeds, userRequirements
   }
 
   addTier(lines, "Compute", sdr.compute);
+  if (sdr.containerized_alternative) {
+    lines.push("### Containerized Alternative (ECS Fargate)");
+    if (sdr.containerized_alternative.fargate_cpu_units != null && sdr.containerized_alternative.fargate_memory_mib != null) {
+      lines.push(`- Task Size: ${sdr.containerized_alternative.fargate_cpu_units} CPU units / ${sdr.containerized_alternative.fargate_memory_mib} MiB`);
+    }
+    addField(lines, "Why", sdr.containerized_alternative.why);
+    addField(lines, "Trade-off", sdr.containerized_alternative.trade_off);
+    lines.push("");
+  }
   addTier(lines, "Database", sdr.database);
   addTier(lines, "Cache", sdr.cache);
   lines.push("### Load Balancer");
@@ -131,6 +166,38 @@ export function recommendationToMarkdown({ sdr, technicalNeeds, userRequirements
   lines.push("");
 
   if (sdr.estimated_cost) addCost(lines, sdr.estimated_cost, sdr);
+
+  if (repository) {
+    lines.push("## Repository Analysis", "");
+    const { owner, name } = repository.repository;
+    const url = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const sha = encodeURIComponent(repository.commit_sha);
+    lines.push(`- Repository: [${owner}/${name}](${url}/commit/${sha})`);
+    lines.push(`- Coverage: ${repository.coverage}, ${repository.files_analyzed} of ${repository.files_discovered} tracked files read`);
+    addField(lines, "Stack", repository.stack.join(", "));
+    addField(lines, "Data stores", repository.databases.join(", "));
+    addField(lines, "Workflows", repository.workflows.join(", "));
+    for (const [reason, count] of Object.entries(repository.skipped)) {
+      if (count > 0) lines.push(`- Skipped ${count} (${reason.replaceAll("_", " ")})`);
+    }
+    for (const limitation of repository.limitations) lines.push(`- ${limitation}`);
+    lines.push(`- Dependency advisory check: ${repository.advisory_status.replaceAll("_", " ")}`, "");
+    for (const note of [...(repositoryAssumptions ?? []), ...(repositoryDeploymentNotes ?? [])]) {
+      lines.push(`- ${note}`);
+    }
+    if (repository.findings.length) {
+      lines.push("", "### Findings", "");
+      for (const finding of repository.findings) {
+        const path = finding.path?.split("/").map(encodeURIComponent).join("/");
+        const location = finding.line ? `#L${finding.line}` : "";
+        const evidence = path ? ` [Evidence](${url}/blob/${sha}/${path}${location})` : "";
+        lines.push(`- **${finding.title}.** ${finding.action}${evidence}`);
+      }
+    }
+    lines.push("");
+  } else if (repositoryProgress?.status === "unavailable") {
+    lines.push("## Repository Analysis", "", "The repository could not be analyzed. This recommendation is based on workload details only.", "");
+  }
 
   return lines.join("\n").trim() + "\n";
 }

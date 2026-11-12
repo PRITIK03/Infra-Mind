@@ -14,9 +14,17 @@ _reset_obs_state (not here — stays in test_observability.py because it
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.llm.structured import _cache_clear
+
+
+def pytest_configure() -> None:
+    """Keep a developer's configured services out of the mocked suite."""
+    for name in ("DATABASE_URL", "REDIS_URL", "SENTRY_DSN"):
+        os.environ[name] = ""
 
 
 @pytest.fixture(autouse=True)

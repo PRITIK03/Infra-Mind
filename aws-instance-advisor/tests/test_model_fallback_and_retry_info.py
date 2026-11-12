@@ -193,6 +193,7 @@ def test_retry_context_callback_called_on_rate_limit(monkeypatch):
     """_call_with_failover reads _retry_context and calls it on each retry."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     callback_calls: list[tuple[int, int]] = []
@@ -219,14 +220,15 @@ def test_retry_context_callback_called_on_rate_limit(monkeypatch):
     assert result == "ok"
     # Two retries fired (attempts 1 and 2), so callback called twice
     assert len(callback_calls) == 2
-    assert callback_calls[0] == (2, 4)  # attempt 2 of 4
-    assert callback_calls[1] == (3, 4)  # attempt 3 of 4
+    assert callback_calls[0] == (2, 6)  # attempt 2 of 6
+    assert callback_calls[1] == (3, 6)  # attempt 3 of 6
 
 
 def test_retry_context_not_called_when_first_attempt_succeeds(monkeypatch):
     """Callback is never called when the first attempt succeeds."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     callback_calls: list = []
@@ -246,6 +248,7 @@ def test_retry_context_default_none_no_error(monkeypatch):
     """With no context var set, _call_with_failover succeeds silently (no AttributeError)."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     # _retry_context defaults to None — must not cause any error
@@ -259,6 +262,7 @@ def test_retry_context_explicit_callback_overrides_context_var(monkeypatch):
     """Explicit retry_callback= arg takes precedence over _retry_context."""
     monkeypatch.setenv("API_KEY", "primary-key")
     monkeypatch.delenv("API_KEY_2", raising=False)
+    monkeypatch.delenv("API_KEY_3", raising=False)
     get_chat_model.cache_clear()
 
     context_calls: list = []

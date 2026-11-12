@@ -58,11 +58,19 @@ _cache: dict[str, dict[str, Any]] = {}
 _cache_lock = threading.Lock()
 
 
-def _cache_key(schema_name: str, prompt: str) -> str:
-    """Stable cache key: schema name + SHA-256 of whitespace-normalised prompt."""
+def _cache_key(schema_name: str, prompt: str, model: str | None = None) -> str:
+    """Stable cache key: schema name + model + SHA-256 of whitespace-normalised prompt.
+
+    The model is part of the key because different models legitimately produce
+    different answers for the same prompt.  In particular the consensus path
+    reuses the *exact same* prompt as the primary holistic-recommend call but
+    against a different model — without the model in the key it would read the
+    primary's cached result and report fake "full agreement".
+    """
     normalised = re.sub(r"\s+", " ", prompt).strip()
     digest = hashlib.sha256(normalised.encode("utf-8")).hexdigest()
-    return f"{schema_name}:{digest}"
+    model_part = model or ""
+    return f"{schema_name}:{model_part}:{digest}"
 
 
 def _cache_get(key: str) -> Any | None:
@@ -224,6 +232,7 @@ def invoke_structured(
     prompt: str,
     *,
     retry_callback: Callable[[int, int], None] | None = None,
+    model_override: str | None = None,
 ) -> T:
     """
     Provider-agnostic structured extraction into a Pydantic schema.
@@ -257,7 +266,19 @@ def invoke_structured(
     use_cache = _is_cacheable(schema) and retry_callback is None
     cache_key: str | None = None
     if use_cache:
-        cache_key = _cache_key(schema_name, prompt)
+        # The cache key includes the effective model so a consensus call on a
+        # different model never reads the primary call's cached result.
+        # Config lookup is defensive: cache-only unit tests may run without
+        # API_KEY set, in which case we fall back to the override-or-empty key.
+        effective_model = model_override
+        if effective_model is None:
+            try:
+                from app.config import get_llm_settings
+
+                effective_model = get_llm_settings().model_name
+            except Exception:
+                effective_model = None
+        cache_key = _cache_key(schema_name, prompt, effective_model)
         cached = _cache_get(cache_key)
         if cached is not None:
             return cached  # type: ignore[return-value]
@@ -280,7 +301,11 @@ def invoke_structured(
                 data = _parse_json_object(text)
                 return _validate_structured_payload(schema, data)
 
-            return _call_with_failover(_primary, retry_callback=retry_callback)
+            return _call_with_failover(
+                _primary,
+                retry_callback=retry_callback,
+                model_override=model_override,
+            )
         except RateLimitExhaustedError:
             raise
         except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -305,7 +330,11 @@ def invoke_structured(
                 normalized = _normalize_instance_recommendation_payload(schema, result)
                 return schema.model_validate(normalized)
 
-            return _call_with_failover(_fallback, retry_callback=retry_callback)
+            return _call_with_failover(
+                _fallback,
+                retry_callback=retry_callback,
+                model_override=model_override,
+            )
         except RateLimitExhaustedError:
             raise
         except StructuredOutputError:

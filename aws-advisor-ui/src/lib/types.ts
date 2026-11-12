@@ -9,6 +9,53 @@ export type JobStatus =
   | "done"
   | "error";
 
+export interface RecommendRequest {
+  message: string;
+  consensus?: boolean;
+  github_url?: string;
+}
+
+export type RepositoryFailureReason =
+  | "disabled" | "not_accessible" | "not_public" | "empty" | "rate_limited"
+  | "unavailable" | "busy" | "timeout" | "no_source";
+
+export interface RepositoryProgress {
+  status: "checking" | "scanning" | "complete" | "partial" | "unavailable";
+  reason?: RepositoryFailureReason;
+  retry_after_seconds?: number;
+}
+
+export interface RepositoryFinding {
+  category: "application" | "database" | "workflow" | "deployment" | "security" | "inference";
+  title: string;
+  action: string;
+  path: string | null;
+  line: number | null;
+  severity: "info" | "review" | "high";
+  confidence: "observed" | "inferred";
+}
+
+export interface RepositoryReport {
+  repository: { owner: string; name: string };
+  commit_sha: string;
+  coverage: "complete" | "partial";
+  files_discovered: number;
+  files_analyzed: number;
+  skipped: Record<string, number>;
+  limitations: string[];
+  stack: string[];
+  databases: string[];
+  configured_databases?: string[];
+  workflows: string[];
+  workload_type: UserRequirements["workload_type"];
+  has_dockerfile: boolean;
+  local_inference: boolean;
+  hosted_inference: boolean;
+  model_artifacts: number;
+  advisory_status: "not_configured" | "no_supported_dependencies" | "checked" | "checked_capped" | "partial" | "unavailable";
+  findings: RepositoryFinding[];
+}
+
 export type CacheEngine = "Memcached" | "Redis" | "Valkey";
 
 export interface InstanceRecommendation {
@@ -62,11 +109,86 @@ export interface SystemDesignRecommendation {
   cache: CacheRecommendation;
   load_balancer: LoadBalancerRecommendation;
   architecture_summary: string;
+  deployment_handoff?: DeploymentHandoff | null;
   repo_analysis_note?: string | null;
   estimated_cost?: EstimatedCost | null;
   grounding_passed?: boolean | null;
   /** Array of issue strings from the grounding check; empty when passed */
   grounding_notes?: string[] | null;
+  /**
+   * Deterministic Well-Architected-style findings computed on the backend
+   * from fields already present in the recommendation. Never LLM-generated.
+   */
+  well_architected_review?: WellArchitectedFinding[] | null;
+  /**
+   * Deterministic ECS Fargate alternative to the compute tier.
+   * Only offered when repository analysis detected a Dockerfile.
+   */
+  containerized_alternative?: ContainerizedAlternative | null;
+  /**
+   * Opt-in multi-model consensus result. Absent when consensus wasn't
+   * requested; present-but-disabled when the backend declined it.
+   */
+  consensus_result?: ConsensusResult | null;
+}
+
+export interface DeploymentHandoff {
+  generated_resources: string[];
+  actions: {
+    id: string;
+    phase: "before_apply" | "before_traffic";
+    title: string;
+    detail: string;
+  }[];
+}
+
+export interface ContainerizedAlternative {
+  recommended: boolean;
+  fargate_cpu_units?: number | null;
+  fargate_memory_mib?: number | null;
+  why: string;
+  trade_off: string;
+}
+
+// ─── Multi-model consensus (deterministic compare, no LLM in the diff) ─────
+export type ConsensusAgreementLevel =
+  | "full"
+  | "partial"
+  | "significant_disagreement";
+
+export interface ConsensusDisagreement {
+  /** Tier name that differed (compute, database, cache, load_balancer). */
+  tier: string;
+  primary_choice: string;
+  secondary_choice: string;
+}
+
+export interface ConsensusResult {
+  /** True when a comparison actually ran; false when declined (see note). */
+  enabled: boolean;
+  primary_model: string;
+  secondary_model: string;
+  agreement_level?: ConsensusAgreementLevel | null;
+  /** Tier names where both models chose identically. */
+  agreements: string[];
+  /** Tiers where the two models chose differently. */
+  disagreements: ConsensusDisagreement[];
+  note?: string | null;
+}
+
+// ─── Well-Architected review (deterministic, no LLM) ──────────────────────
+export type WellArchitectedPillar =
+  | "reliability"
+  | "security"
+  | "cost_optimization"
+  | "performance_efficiency"
+  | "operational_excellence";
+
+export interface WellArchitectedFinding {
+  pillar: WellArchitectedPillar;
+  /** info = worth knowing · warning = check before deploying */
+  severity: "info" | "warning";
+  message: string;
 }
 
 export interface UserRequirements {
@@ -76,6 +198,9 @@ export interface UserRequirements {
 }
 
 export interface JobResult {
+  repository_report?: RepositoryReport;
+  repository_assumptions?: string[];
+  repository_deployment_notes?: string[];
   system_design_recommendation?: SystemDesignRecommendation;
   /** Legacy V1 fallback — rendered if system_design_recommendation is absent */
   recommendation?: InstanceRecommendation;
@@ -119,11 +244,18 @@ export interface InstanceCandidate {
 // ─── Polling response shapes ───────────────────────────────────────────────
 // Fields are conditionally present — absent when not applicable.
 
+export interface FollowupExchange {
+  question: string;
+  answer: string;
+  timestamp: string;
+}
+
 export interface JobResponse {
   job_id: string;
   status: JobStatus;
   current_stage: string;
   created_at: number;
+  repository?: RepositoryProgress;
   // awaiting_input only:
   next_question?: string;
   // done only:
@@ -132,6 +264,8 @@ export interface JobResponse {
   retry_info?: string | null;
   // error only:
   error?: string;
+  /** Conversational follow-up Q&A history — populated after job is done */
+  followup_history?: FollowupExchange[];
 }
 
 // ─── Ordered stage list — drives the progress step-list ───────────────────

@@ -1,0 +1,291 @@
+"""Dev/E2E helper: serve the API with seeded completed jobs.
+
+No LLM or live-data calls are made — the result dicts below ARE the fixtures.
+Doubles as the fixture factory for the Playwright E2E suite (see
+aws-advisor-ui/e2e): the seed shapes here cover the result variants the UI
+renders (full stack / no database / compute only).
+
+Usage: python scripts/dev_seed_and_serve.py  (Ctrl+C to stop)
+"""
+
+from __future__ import annotations
+
+import os
+
+# Config validation runs at import time; satisfy it with dummies.
+os.environ.setdefault("API_KEY", "dummy-key")
+os.environ.setdefault("BASE_URL", "https://example.com/v1")
+os.environ.setdefault("MODEL_NAME", "dummy-model")
+os.environ.setdefault("VANTAGE_API_KEY", "dummy-vantage-key")
+os.environ.setdefault("CORS_ALLOWED_ORIGIN", "http://localhost:3000")
+os.environ.setdefault("PORT", "8000")
+os.environ.setdefault("LOG_FORMAT", "text")
+
+for name in ("DATABASE_URL", "REDIS_URL", "SENTRY_DSN"):
+    os.environ[name] = ""
+
+import time
+
+import uvicorn
+
+from app.api.job_store import Job
+from app.api.main import app
+from app.api.runtime import jobs
+from app.agent.nodes.terraform_generator import generate_terraform
+from app.analysis.well_architected import build_well_architected_review
+from app.models.schemas import SystemDesignRecommendation, TechnicalNeeds, UserRequirements
+
+# Stable ids the E2E suite asserts against (aws-advisor-ui/e2e/smoke.spec.ts).
+FULL_STACK_ID = "seed-e2e-full-stack"
+NO_DB_ID = "seed-e2e-no-db"
+COMPUTE_ONLY_ID = "seed-e2e-compute-only"
+OG_CHECK_ID = "seed-visual-check-0001"
+
+
+def _base_sdr() -> dict:
+    return {
+        "architecture_summary": (
+            "API behind an Application Load Balancer, with EC2 compute, PostgreSQL "
+            "storage and Redis for hot reads. Configure a scaling policy before serving traffic."
+        ),
+        "compute": {
+            "recommended_instance": "m5.large",
+            "why": "Balanced general-purpose compute for a steady API workload.",
+            "assumptions": ["Traffic is mostly read-heavy API calls."],
+            "confidence": "high",
+        },
+        "database": {
+            "needed": True,
+            "recommended_instance": "db.t3.medium",
+            "engine_suggestion": "PostgreSQL",
+            "why": "Standard relational storage with mature tooling.",
+            "assumptions": [],
+            "confidence": "medium",
+        },
+        "cache": {
+            "needed": True,
+            "recommended_instance": "cache.t3.micro",
+            "engine": "Redis",
+            "why": "Session cache and hot reads.",
+            "assumptions": [],
+            "confidence": "high",
+        },
+        "load_balancer": {
+            "needed": True, "load_balancer_type": "Application Load Balancer",
+            "why": "Distribute requests across the compute instances.",
+        },
+        "grounding_notes": ["Demonstration fixture; no live model verification."],
+        "well_architected_review": [
+            {
+                "pillar": "operational_excellence",
+                "severity": "info",
+                "message": "Infrastructure is expressed as reviewed Terraform.",
+            },
+            {
+                "pillar": "cost_optimization",
+                "severity": "warning",
+                "message": "Rightsize after two weeks of real traffic data.",
+            },
+        ],
+        "estimated_cost": {
+            "compute_monthly_low": 140.16, "compute_monthly_high": 280.32,
+            "database_monthly": 49.64, "cache_monthly": 12.41,
+            "total_monthly_low": 202.21, "total_monthly_high": 342.37,
+        },
+    }
+
+
+def _full_stack_result() -> dict:
+    # terraform_files and technical_needs are top-level JobResult fields
+    # (the same shape the real pipeline produces), not SDR fields.
+    needs = TechnicalNeeds(
+        estimated_concurrency=150, min_instances=2, max_instances=4,
+        resource_profile="balanced", traffic_pattern="steady", requires_gpu=False,
+        scaling_recommendation="Two to four compute instances; validate capacity with load tests.",
+        needs_database=True, needs_cache=True, load_balancer_needed=True,
+        reasoning="Illustrative API workload with relational storage and a read cache.",
+    )
+    requirements = UserRequirements(
+        workload_type="api_service", estimated_concurrent_users=150,
+        traffic_pattern="steady", database_engine="PostgreSQL",
+    )
+    sdr = SystemDesignRecommendation.model_validate(_base_sdr())
+    sdr.well_architected_review = build_well_architected_review(sdr, needs)
+    state = generate_terraform({
+        "system_design_recommendation": sdr,
+        "technical_needs": needs, "requirements": requirements,
+    })
+    return {
+        "system_design_recommendation": state["system_design_recommendation"].model_dump(mode="json"),
+        "terraform_files": state["terraform_files"],
+        "technical_needs": needs.model_dump(mode="json"),
+        "user_requirements": requirements.model_dump(mode="json"),
+    }
+
+
+def _no_db_result() -> dict:
+    sdr = _base_sdr()
+    sdr["architecture_summary"] = "One EC2 instance serves a stateless API without a database or cache."
+    sdr["load_balancer"] = {"needed": False, "why": "Single-instance demonstration."}
+    sdr["database"] = {
+        "needed": False,
+        "why": "Stateless API with no persistence requirement.",
+        "assumptions": [],
+        "confidence": "high",
+    }
+    sdr["cache"] = {
+        "needed": False,
+        "why": "Working set fits in instance memory.",
+        "assumptions": [],
+        "confidence": "medium",
+    }
+    sdr["estimated_cost"] = {
+        "compute_monthly_low": 70.08, "compute_monthly_high": 70.08,
+        "total_monthly_low": 70.08, "total_monthly_high": 70.08,
+    }
+    return {"system_design_recommendation": sdr}
+
+
+def _compute_only_result() -> dict:
+    sdr = _base_sdr()
+    sdr["architecture_summary"] = "An ALB distributes requests to EC2 instances without a database or cache."
+    sdr["database"] = {
+        "needed": False,
+        "why": "No persistence required.",
+        "assumptions": [],
+        "confidence": "high",
+    }
+    sdr["cache"] = {
+        "needed": False,
+        "why": "No cache required.",
+        "assumptions": [],
+        "confidence": "high",
+    }
+    sdr["load_balancer"] = {
+        "needed": True,
+        "why": "Two instances for availability.",
+    }
+    del sdr["estimated_cost"]
+    return {"system_design_recommendation": sdr}
+
+
+def _og_check_result() -> dict:
+    """The original single-purpose OG verification fixture, kept stable."""
+    return {
+        "system_design_recommendation": {
+            "architecture_summary": "Two-tier web service behind an ALB.",
+            "compute": {
+                "recommended_instance": "m5.large",
+                "why": "Balanced general-purpose compute for a steady API workload.",
+                "assumptions": ["Traffic is mostly read-heavy API calls."],
+                "confidence": "high",
+            },
+            "database": {
+                "needed": True,
+                "recommended_instance": "db.t3.medium",
+                "engine_suggestion": "PostgreSQL",
+                "why": "Standard relational storage with mature tooling.",
+                "assumptions": [],
+                "confidence": "medium",
+            },
+            "cache": {
+                "needed": True,
+                "recommended_instance": "cache.t3.micro",
+                "engine": "Redis",
+                "why": "Session cache and hot reads.",
+                "assumptions": [],
+                "confidence": "high",
+            },
+            "load_balancer": {"needed": False, "why": "Single instance is sufficient."},
+            "estimated_cost": {"total_monthly_low": 120.0, "total_monthly_high": 150.0},
+        }
+    }
+
+
+def seed_jobs() -> list[str]:
+    """Factory: seed every fixture job into the process store; returns ids."""
+    fixtures = {
+        FULL_STACK_ID: _full_stack_result(),
+        NO_DB_ID: _no_db_result(),
+        COMPUTE_ONLY_ID: _compute_only_result(),
+        OG_CHECK_ID: _og_check_result(),
+    }
+    for job_id, result in fixtures.items():
+        jobs.put(
+            Job(
+                job_id=job_id,
+                status="done",
+                current_stage="Complete",
+                state={},
+                result=result,
+            )
+        )
+    return list(fixtures)
+
+
+def install_analysis_fixtures() -> None:
+    """Replace external providers while exercising the real job/API flow."""
+    import asyncio
+
+    from app.agent import graph
+    from app.analysis import repository
+    from app.models.schemas import SystemDesignRecommendation, UserRequirements
+    from app.tools.github_repository import Commit, RepositorySnapshot, RepositoryUnavailable
+
+    class FixtureGitHub:
+        def __init__(self, _client, _token):
+            pass
+
+        async def resolve(self, ref):
+            if ref.owner != "inframind-demo" or ref.name not in ("public-service", "partial-service"):
+                raise RepositoryUnavailable("not_accessible")
+            return Commit(ref, "a" * 40, "b" * 40)
+
+        async def snapshot(self, commit):
+            # Give the browser a chance to observe the real scanning stage.
+            await asyncio.sleep(0.2)
+            files = {
+                "services/api/main.py": "from fastapi import FastAPI\napp = FastAPI()\n",
+                "services/api/db/migrations/001.sql": "CREATE EXTENSION IF NOT EXISTS pgcrypto;",
+                "services/api/Dockerfile": "FROM python:3.11\n",
+            }
+            snapshot = RepositorySnapshot(commit, len(files), files=files)
+            if commit.repository.name == "partial-service":
+                snapshot.files_discovered += 1
+                snapshot.skipped["unreadable"] += 1
+            return snapshot
+
+    def collect(state):
+        if state.get("latest_user_message"):
+            state["requirements"] = UserRequirements(
+                workload_type="api_service", requests_per_second=25, traffic_pattern="steady",
+            )
+            state["latest_user_message"] = None
+        return state
+
+    def recommend(state):
+        fixture = _full_stack_result()
+        state["system_design_recommendation"] = SystemDesignRecommendation.model_validate(fixture["system_design_recommendation"])
+        state["technical_needs"] = TechnicalNeeds.model_validate(fixture["technical_needs"])
+        return generate_terraform(state)
+
+    os.environ["REPOSITORY_ANALYSIS_ENABLED"] = "true"
+    os.environ.pop("REPOSITORY_GITHUB_TOKEN", None)
+    os.environ.pop("REPOSITORY_OSV_SCANNER", None)
+    repository.GitHubRepository = FixtureGitHub
+    graph.collect_requirements = collect
+    graph.holistic_recommend = recommend
+    for name in ("reason_system_design", "research_instances", "research_database", "research_cache",
+                 "grounding_check", "consensus_check", "generate_terraform"):
+        setattr(graph, name, lambda state: state)
+
+
+if __name__ == "__main__":
+    install_analysis_fixtures()
+    seeded = seed_jobs()
+    for job_id in seeded:
+        print(f"Seeded job {job_id} -> /api/share/{job_id}")
+    # Give the store a beat, then serve — same entrypoint as production.
+    time.sleep(0.1)
+    print("Serving on http://127.0.0.1:8000 (Ctrl+C to stop)")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")

@@ -37,6 +37,7 @@ def test_get_chat_model_includes_reasoning_cap_in_request_payload(monkeypatch):
     monkeypatch.setenv("MODEL_NAME", "test-model")
     monkeypatch.setenv("LLM_MAX_TOKENS", "8192")
     monkeypatch.setenv("LLM_REASONING_MAX_TOKENS", "2048")
+    monkeypatch.delenv("LLM_FALLBACK_MODELS", raising=False)
 
     get_chat_model.cache_clear()
     model = get_chat_model()

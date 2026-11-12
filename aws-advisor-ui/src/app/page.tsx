@@ -3,21 +3,37 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useJobPoller } from "@/hooks/useJobPoller";
 import { StageProgress } from "@/components/StageProgress";
 import { AwaitingInputPanel } from "@/components/AwaitingInputPanel";
-import { ResultReport } from "@/components/ResultReport";
-import { TerraformViewer } from "@/components/TerraformViewer";
+// Code-split like TerraformViewer: the full report (and everything it pulls
+// in) only exists once a run completes, never on the initial landing view.
+const ResultReport = dynamic(
+  () => import("@/components/ResultReport").then((m) => m.ResultReport),
+  { ssr: false },
+);
+// Code-split: the viewer pulls in react-syntax-highlighter (Prism/refractor)
+// and only mounts when a run actually produced Terraform files — keep it
+// out of the initial landing-page bundle.
+const TerraformViewer = dynamic(
+  () => import("@/components/TerraformViewer").then((m) => m.TerraformViewer),
+  { ssr: false },
+);
+import { FollowupPanel } from "@/components/FollowupPanel";
 import { ErrorPanel } from "@/components/ErrorPanel";
-import { LiveStatsReadout } from "@/components/LiveStatsReadout";
 import { SectionNav } from "@/components/SectionNav";
 import { RequestSummary } from "@/components/RequestSummary";
 import { CopyReportButton } from "@/components/CopyReportButton";
+import { ExportPdfButton } from "@/components/ExportPdfButton";
+import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
+import { ResultSummaryStrip } from "@/components/ResultSummaryStrip";
+import { ConsensusResult } from "@/components/ConsensusResult";
 import { PipelineTrace } from "@/components/PipelineTrace";
 import type { RunRecord } from "@/lib/types";
 import { BackendStatus } from "@/components/BackendStatus";
 import { CommandPalette } from "@/components/CommandPalette";
-import { PipelinePreview } from "@/components/PipelinePreview";
+import { RepositoryAnalysis, repositoryFailureMessage } from "@/components/RepositoryAnalysis";
 import { getRuns } from "@/lib/api";
 
 // ── Example prompts drawn from the validated test scenarios ─────────────────
@@ -49,149 +65,121 @@ function Wordmark() {
   return (
     <div className="flex items-baseline gap-2">
       <span className="font-mono text-sm font-medium text-amber tracking-tight">
-        aws-instance-advisor
+        InfraMind
       </span>
-      <span className="font-mono text-xs text-ink-dim">v2</span>
     </div>
   );
 }
 
 // ── Command-prompt input ──────────────────────────────────────────────────────
 interface InputPanelProps {
-  onSubmit: (msg: string) => void;
+  draft: { workload: string; githubUrl: string; compare: boolean };
+  onChange: (draft: InputPanelProps["draft"]) => void;
+  onSubmit: () => void;
   disabled: boolean;
-  submitHint: string;
+  repositoryError?: string;
+  error?: string;
 }
 
-// Auto-grow cap — roughly ten comfortable lines before the box scrolls.
-const TEXTAREA_MAX_PX = 220;
+const EMPTY_DRAFT = { workload: "", githubUrl: "", compare: false };
+const FIELD_CLASS = "w-full rounded-lg border border-ink/40 bg-ink/[0.03] px-4 py-3 text-base leading-relaxed text-ink placeholder:text-ink/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber disabled:opacity-50";
 
-function InputPanel({ onSubmit, disabled, submitHint }: InputPanelProps) {
-  const [value, setValue] = useState("");
+function InputPanel({ draft, onChange, onSubmit, disabled, repositoryError, error }: InputPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const repositoryRef = useRef<HTMLInputElement>(null);
+  const canRun = Boolean(draft.workload.trim() || draft.githubUrl.trim()) && !disabled;
 
-  // Grow the prompt box with its content, capped at TEXTAREA_MAX_PX
   useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = value
-      ? `${Math.min(el.scrollHeight, TEXTAREA_MAX_PX)}px`
-      : "";
-  }, [value]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = value.trim();
-    if (!trimmed || disabled) return;
-    onSubmit(trimmed);
-    setValue("");
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Cmd/Ctrl+Enter submits; plain Enter adds newline
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      const trimmed = value.trim();
-      if (trimmed && !disabled) {
-        onSubmit(trimmed);
-        setValue("");
-      }
-    }
-  };
-
-  const fillExample = (prompt: string) => {
-    setValue(prompt);
-    textareaRef.current?.focus();
-  };
+    if (repositoryError) repositoryRef.current?.focus();
+  }, [repositoryError]);
 
   return (
-    <div className="w-full">
-      {/* Prompt chips */}
-      <div className="mb-5">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="font-mono text-xs text-ink-dim uppercase tracking-widest">
-            examples
-          </span>
-          <span className="flex-1 border-t border-border-subtle" />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {EXAMPLES.map((ex) => (
+    <form
+      aria-busy={disabled}
+      className="space-y-5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (canRun) onSubmit();
+      }}
+    >
+      {error && <p className="text-sm text-red-200" role="alert">{error}</p>}
+      <div>
+        <label htmlFor="github-repository" className="mb-2 block text-sm font-medium text-ink">GitHub repository</label>
+        <input
+          id="github-repository"
+          ref={repositoryRef}
+          type="text"
+          inputMode="url"
+          autoCapitalize="none"
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={256}
+          placeholder="https://github.com/owner/repository"
+          value={draft.githubUrl}
+          onChange={(event) => onChange({ ...draft, githubUrl: event.target.value })}
+          aria-invalid={repositoryError ? true : undefined}
+          aria-describedby={repositoryError ? "github-repository-error" : undefined}
+          disabled={disabled}
+          className={FIELD_CLASS}
+        />
+        {repositoryError && <p id="github-repository-error" role="alert" className="mt-2 text-sm text-red-200">{repositoryError}</p>}
+      </div>
+      <div>
+        <label htmlFor="workload-details" className="mb-2 block text-sm font-medium text-ink">Workload details</label>
+        <textarea
+          id="workload-details"
+          ref={textareaRef}
+          value={draft.workload}
+          onChange={(event) => onChange({ ...draft, workload: event.target.value })}
+          onKeyDown={(event) => {
+            if (!event.nativeEvent.isComposing && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder="Describe your traffic, database, or deployment needs…"
+          disabled={disabled}
+          maxLength={10_000}
+          rows={4}
+          className={`${FIELD_CLASS} block min-h-28 resize-y`}
+        />
+        <div className="mt-2 flex flex-wrap gap-x-2" aria-label="Example workloads">
+          {EXAMPLES.map((example) => (
             <button
-              key={ex.label}
-              onClick={() => fillExample(ex.prompt)}
+              key={example.label}
+              type="button"
+              onClick={() => {
+                onChange({ ...draft, workload: example.prompt });
+                textareaRef.current?.focus();
+              }}
               disabled={disabled}
-              className={[
-                "border border-border-subtle px-3 py-1.5",
-                "font-mono text-xs text-ink-dim",
-                "transition-colors duration-150",
-                "hover:text-amber hover:border-amber/40 hover:bg-white/[0.03]",
-                "active:translate-y-px",
-                "disabled:opacity-30 disabled:cursor-not-allowed",
-              ].join(" ")}
+              className="min-h-11 rounded-md px-2 text-sm text-ink/75 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50"
             >
-              {ex.label}
+              {example.label}
             </button>
           ))}
         </div>
       </div>
-
-      {/* Main input */}
-      <form onSubmit={handleSubmit}>
-        <div
-          className={[
-            "flex gap-0 border border-border-subtle",
-            "transition-colors duration-150",
-            "focus-within:border-amber/30",
-          ].join(" ")}
-        >
-          {/* Prompt sigil */}
-          <div className="flex items-start pt-3 px-3 shrink-0 border-r border-border-subtle">
-            <span className="font-mono text-sm text-amber leading-6">&gt;</span>
-          </div>
-
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="describe your application and workload…"
-            aria-label="Describe your application and workload"
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border-subtle pt-4">
+        <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-ink/85">
+          <input
+            type="checkbox"
+            checked={draft.compare}
+            onChange={(event) => onChange({ ...draft, compare: event.target.checked })}
             disabled={disabled}
-            rows={4}
-            className={[
-              "flex-1 bg-transparent resize-none",
-              "font-sans text-sm text-ink placeholder:text-ink-dim",
-              "px-3 py-3 outline-none leading-relaxed",
-              "min-h-[96px] overflow-y-auto",
-              "disabled:opacity-40 disabled:cursor-not-allowed",
-            ].join(" ")}
+            className="accent-amber"
           />
-        </div>
-
-        <div className="flex items-center justify-between mt-2">
-          <span className="font-mono text-xs text-ink-dim">
-            {submitHint} to submit
-          </span>
-          <button
-            type="submit"
-            disabled={!value.trim() || disabled}
-            className={[
-              "border border-border-subtle px-5 py-2",
-              "font-mono text-xs text-ink-muted uppercase tracking-wider",
-              "transition-colors duration-150",
-              "enabled:text-amber enabled:border-amber/60 enabled:hover:bg-amber/[0.04]",
-              "hover:text-amber hover:border-amber/40 hover:bg-white/[0.03]",
-              "active:translate-y-px",
-              "disabled:opacity-30 disabled:cursor-not-allowed",
-              "disabled:hover:text-ink-muted disabled:hover:border-border-subtle",
-            ].join(" ")}
-          >
-            run →
-          </button>
-        </div>
-      </form>
-    </div>
+          Compare with a second model
+        </label>
+        <button
+          type="submit"
+          disabled={!canRun}
+          className="min-h-11 rounded-lg bg-amber px-5 text-sm font-semibold text-canvas transition-colors hover:bg-amber/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-amber disabled:cursor-not-allowed disabled:bg-ink/15 disabled:text-ink/60 max-sm:w-full"
+        >
+          {disabled ? "Starting analysis…" : "Run analysis"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -200,8 +188,7 @@ export default function Home() {
   const router = useRouter();
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [recentRun, setRecentRun] = useState<RunRecord | null>(null);
-  const [platformHint, setPlatformHint] = useState("⌘K / Ctrl+K");
-  const [submitHint, setSubmitHint] = useState("⌘↵ / Ctrl+↵");
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
   const {
     status,
     currentStage,
@@ -211,6 +198,7 @@ export default function Home() {
     retryInfo,
     isWakingUp,
     isActive,
+    inputError,
     submit,
     answer,
     reset,
@@ -219,9 +207,6 @@ export default function Home() {
   } = useJobPoller();
 
   useEffect(() => {
-    const isApple = /Mac|iPhone|iPad/.test(navigator.platform);
-    setPlatformHint(isApple ? "⌘K" : "Ctrl+K");
-    setSubmitHint(isApple ? "⌘↵" : "Ctrl+↵");
     getRuns()
       .then((response) => {
         if (response.observability_configured && response.runs.length > 0) {
@@ -231,16 +216,32 @@ export default function Home() {
       .catch(() => setRecentRun(null));
   }, []);
 
-  const showLanding = status === null;
+  const repositoryProgress = jobResponse?.repository;
+  const failedRepository = repositoryProgress?.status === "unavailable" ? repositoryProgress : undefined;
+  const canEditFailedRun = status === "error" && Boolean(draft.workload || draft.githubUrl);
+  const showLanding = status === null || canEditFailedRun;
   const showProgress = status !== null && status !== "done" && status !== "error";
   const showResult = status === "done" && jobResponse?.result != null;
-  const showError = status === "error" && error != null;
+  const showError = status === "error" && error != null && !canEditFailedRun;
+  const repositoryError = status === "error"
+    ? inputError === "github_url" ? error ?? undefined
+      : failedRepository ? `${repositoryFailureMessage(failedRepository)} Add workload details or edit the link.`
+        : undefined
+    : undefined;
+  const report = jobResponse?.result?.repository_report;
+  const repositoryAssumptions = jobResponse?.result?.repository_assumptions;
+  const repositoryDeploymentNotes = jobResponse?.result?.repository_deployment_notes;
+  const hasRepositorySection = Boolean(report || failedRepository);
 
   const sdr = jobResponse?.result?.system_design_recommendation;
   const tfFiles = jobResponse?.result?.terraform_files;
   const technicalNeeds = jobResponse?.result?.technical_needs;
   const userRequirements = jobResponse?.result?.user_requirements;
   const instanceCandidates = jobResponse?.result?.instance_candidates;
+  const newAnalysis = () => {
+    setDraft(EMPTY_DRAFT);
+    reset();
+  };
   const resultCost = sdr?.estimated_cost;
   const traceRun: RunRecord | null = showResult && jobResponse?.result
     ? {
@@ -284,14 +285,17 @@ export default function Home() {
               >
                 run history
               </Link>
+              <Link
+                href="/how-it-works"
+                className="font-mono text-xs text-ink-dim hover:text-amber hover:bg-white/[0.03] transition-colors px-2 py-1"
+              >
+                how it works
+              </Link>
             </nav>
           </div>
           {process.env.NEXT_PUBLIC_API_URL && (
             <span className="flex items-center gap-2">
               <BackendStatus />
-              <span className="font-mono text-xs text-ink-dim hidden sm:block">
-                {process.env.NEXT_PUBLIC_API_URL}
-              </span>
             </span>
           )}
         </div>
@@ -313,29 +317,27 @@ export default function Home() {
         {showLanding && (
           <section className="animate-fade-in max-w-3xl w-full mx-auto">
             <div className="mb-8">
-              <h1 className="font-mono text-xl font-medium text-ink mb-2 tracking-tight">
-                <span className="text-amber mr-2" aria-hidden="true">
-                  &gt;
-                </span>
-                AWS Instance Advisor
+              <h1 className="font-sans text-3xl font-medium text-ink tracking-tight">
+                Plan your AWS infrastructure
               </h1>
-              <p className="font-sans text-sm text-ink-muted leading-relaxed max-w-xl">
-                Describe your application and workload. The advisor reasons about
-                your requirements, researches live AWS instance data, and returns
-                a vetted compute, database, cache, and load-balancer recommendation
-                — plus ready-to-apply Terraform.
-              </p>
-              <div className="mt-4">
-                <LiveStatsReadout />
-              </div>
             </div>
-            <InputPanel onSubmit={submit} disabled={isActive} submitHint={submitHint} />
-            <p className="mt-3 text-center font-mono text-[10px] text-ink-dim">
-              {platformHint} for quick actions
-            </p>
+            <InputPanel
+              draft={draft}
+              onChange={(nextDraft) => {
+                setDraft(nextDraft);
+                if (status === "error") reset();
+              }}
+              onSubmit={() => {
+                const githubUrl = draft.githubUrl.trim();
+                if (githubUrl) void submit(draft.workload.trim(), draft.compare, githubUrl);
+                else void submit(draft.workload.trim(), draft.compare);
+              }}
+              disabled={isActive}
+              repositoryError={repositoryError}
+              error={canEditFailedRun && !repositoryError ? error ?? undefined : undefined}
+            />
             {recentRun && recentSnapshot && (
               <div className="mt-8 border-l-2 border-amber/30 pl-3" aria-label="Recent activity">
-                <p className="font-mono text-[10px] uppercase tracking-widest text-ink-dim">recent activity</p>
                 <p className="mt-1 font-mono text-xs text-ink-muted">
                   Last run: {recentSnapshot.compute_instance ?? "compute unavailable"}
                   {recentSnapshot.database_engine ? ` + ${recentSnapshot.database_engine}` : ""}
@@ -346,7 +348,6 @@ export default function Home() {
                 </p>
               </div>
             )}
-            <PipelinePreview />
           </section>
         )}
 
@@ -362,34 +363,37 @@ export default function Home() {
               />
             ) : (
               /* Compact "running" header */
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3" role="status" aria-live="polite">
                 <span className="w-2 h-2 rounded-full bg-amber animate-pulse shrink-0" />
                 <span className="font-mono text-sm text-ink-muted typewriter-cursor">
                   {currentStage || "Initializing"}
                 </span>
               </div>
             )}
+            {failedRepository && (
+              <p className="text-sm text-ink/80" role="status">
+                {repositoryFailureMessage(failedRepository)} Continuing with workload details.
+              </p>
+            )}
 
             <hr className="console-rule" />
 
-<StageProgress
+            <StageProgress
               currentStage={currentStage}
               status={status}
               retryInfo={retryInfo}
-/>
+              hasRepository={Boolean(repositoryProgress)}
+            />
           </section>
         )}
 
         {/* ── Result ── */}
-{showResult && sdr && (
+        {showResult && sdr && (
               <section>
                 {/* "New analysis" action in top bar */}
-                <div className="flex items-center justify-between mb-6">
+                <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-amber uppercase tracking-widest">
-                      recommendation
-                    </span>
-                    <span className="flex-1 border-t border-amber/20 w-8" />
+                    <h1 className="text-lg font-medium text-ink">Recommendation</h1>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-3">
                     {totalElapsedMs != null && (
@@ -404,10 +408,16 @@ export default function Home() {
                       sdr={sdr}
                       technicalNeeds={technicalNeeds}
                       userRequirements={userRequirements}
+                      repository={report}
+                      repositoryProgress={repositoryProgress}
+                      repositoryAssumptions={repositoryAssumptions}
+                      repositoryDeploymentNotes={repositoryDeploymentNotes}
                     />
+                    <CopyShareLinkButton jobId={jobResponse!.job_id} restricted={hasRepositorySection} />
+                    <ExportPdfButton />
                     <button
                       type="button"
-                      onClick={reset}
+                      onClick={newAnalysis}
                       className={[
                         "border border-border-subtle px-3 py-1.5",
                         "font-mono text-xs text-ink-dim uppercase tracking-wider",
@@ -421,21 +431,38 @@ export default function Home() {
                   </div>
                 </div>
 
+                {Boolean(repositoryAssumptions?.length) && (
+                  <a href="#repository" className="mb-4 inline-block text-sm text-amber underline underline-offset-4">Review provisional sizing assumptions</a>
+                )}
                 <div className="grid gap-6 xl:grid-cols-[200px_1fr_280px]">
                   {/* Left: sticky section nav (desktop only) */}
-                  <SectionNav
-                    sdr={sdr}
-                    technicalNeeds={technicalNeeds}
-                    hasTerraform={Boolean(tfFiles && Object.keys(tfFiles).length > 0)}
-                  />
+                  <div className="print:hidden">
+                    <SectionNav
+                      sdr={sdr}
+                      technicalNeeds={technicalNeeds}
+                      hasTerraform={Boolean(tfFiles && Object.keys(tfFiles).length > 0)}
+                      hasRepository={hasRepositorySection}
+                    />
+                  </div>
 
                   {/* Center: main report */}
                   <div className="min-w-0">
+                    <ResultSummaryStrip sdr={sdr} />
                     <ResultReport
                       sdr={sdr}
                       technicalNeeds={technicalNeeds}
                       instanceCandidates={instanceCandidates}
                     />
+                    <RepositoryAnalysis
+                      report={report}
+                      progress={repositoryProgress}
+                      assumptions={repositoryAssumptions}
+                      deploymentNotes={repositoryDeploymentNotes}
+                    />
+
+                    {sdr.consensus_result && (
+                      <ConsensusResult consensus={sdr.consensus_result} />
+                    )}
 
                     {tfFiles && Object.keys(tfFiles).length > 0 && (
                       <>
@@ -446,15 +473,22 @@ export default function Home() {
                         </div>
                       </>
                     )}
+
+                    {/* Follow-up Q&A — only on completed jobs */}
+                    <hr className="console-rule my-0" />
+                    <FollowupPanel
+                      jobId={jobResponse!.job_id}
+                      initialHistory={jobResponse!.followup_history ?? []}
+                    />
                   </div>
 
                   {/* Right: sticky request summary (desktop only) */}
-                  <div className="min-w-0 flex flex-col gap-6 xl:sticky xl:top-24 self-start">
+                  <div className="min-w-0 flex flex-col gap-6 xl:sticky xl:top-24 self-start print:hidden">
                     {technicalNeeds && (
                       <RequestSummary
                         tn={technicalNeeds}
                         requirements={userRequirements}
-                        repoAnalysisNote={sdr.repo_analysis_note}
+                        repoAnalysisNote={repositoryProgress ? undefined : sdr.repo_analysis_note}
                       />
                     )}
                     {traceRun && (
@@ -476,16 +510,18 @@ export default function Home() {
         <CommandPalette
           open={commandPaletteOpen}
           onOpenChange={setCommandPaletteOpen}
-          onNewAnalysis={reset}
+          onNewAnalysis={newAnalysis}
           onCopyReport={showResult ? () => window.dispatchEvent(new Event("copy-report")) : undefined}
           onViewRawJson={showResult && tfFiles ? () => window.dispatchEvent(new Event("view-raw-json")) : undefined}
           onGoToHistory={() => router.push("/history")}
           resultSections={showResult ? [
+            ...(sdr?.deployment_handoff ? [{ id: "deployment", label: "Deployment" }] : []),
             ...(sdr?.estimated_cost ? [{ id: "cost", label: "Cost" }] : []),
             { id: "compute", label: "Compute" },
             { id: "database", label: "Database" },
             { id: "cache", label: "Cache" },
             { id: "load-balancer", label: "Load Balancer" },
+            ...(hasRepositorySection ? [{ id: "repository", label: "Repository analysis" }] : []),
             ...(tfFiles ? [{ id: "terraform", label: "Terraform" }] : []),
           ] : []}
         />

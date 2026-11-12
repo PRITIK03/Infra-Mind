@@ -25,7 +25,10 @@ export function CopyableValue({ value, children, className = "" }: Props) {
     <span
       role="button"
       tabIndex={0}
-      aria-label={`Copy ${value}`}
+      // No aria-label: the rendered content already names the action (e.g.
+      // "$120 - $150" inside a 'copy this value' affordance), and a label
+      // that doesn't contain the visible text fails axe's
+      // label-content-name-mismatch rule.
       title="click to copy"
       onClick={() => void copy()}
       onKeyDown={(event) => {

@@ -1,3 +1,4 @@
+import "./src/test/polyfills";
 import "@testing-library/jest-dom/vitest";
 
 // Ensure the API module always sees a configured base URL in tests.

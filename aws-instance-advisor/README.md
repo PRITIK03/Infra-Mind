@@ -1,6 +1,6 @@
 # InfraMind — AWS Instance Advisor
 
-An AI agent that gathers your workload requirements, reasons about system design, researches live AWS instance data across compute, database, and cache tiers, and recommends the optimal setup — with deployable Terraform files generated automatically.
+InfraMind sizes AWS infrastructure from workload details, a public GitHub repository, or both. It recommends compute, database, and cache resources using live catalog data and exports a [Terraform starting point](../README.md#using-the-terraform-export).
 
 This folder is the **backend** of the InfraMind monorepo. The Next.js frontend
 lives alongside it at `../aws-advisor-ui/`. See the [root README](../README.md)
@@ -22,7 +22,7 @@ Do not nest or recreate a second frontend under this backend directory.
 3. It reasons about system design — concurrency, resource profile, traffic pattern, scaling strategy.
 4. It researches live EC2, RDS, and ElastiCache instance data.
 5. It returns a full architecture recommendation (compute + database + cache + load balancer) with confidence scores and trade-offs.
-6. Terraform files for the recommended setup are written to `terraform_output/`.
+6. Download the Terraform from the web result or find the CLI export in `terraform_output/`.
 
 ---
 
@@ -31,8 +31,8 @@ Do not nest or recreate a second frontend under this backend directory.
 | Tool | Minimum version |
 |------|----------------|
 | Python | 3.11 |
-| Node.js | 18 |
-| npm | 9 |
+| Node.js | 22.13+ (24 LTS used in CI) |
+| npm | 10 |
 
 ---
 
@@ -41,8 +41,8 @@ Do not nest or recreate a second frontend under this backend directory.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/PRITIK03/Infra-Mind--host-rec..-.git
-cd Infra-Mind--host-rec..-
+git clone https://github.com/PRITIK03/Infra-Mind.git
+cd Infra-Mind
 ```
 
 ### 2. Set up the backend
@@ -75,15 +75,26 @@ Open `.env` and set:
 | `VANTAGE_API_KEY` | Yes | [Vantage](https://www.vantage.sh/) API key for live EC2 pricing data |
 | `TAVILY_API_KEY` | No | Enables a web-search round during reasoning. Agent works without it. |
 | `API_KEY_2` | No | Second OpenRouter key for automatic rate-limit failover |
-| `CORS_ALLOWED_ORIGIN` | Yes | Explicit frontend origin; use `http://localhost:3000` locally and the real Vercel domain in production |
+| `CORS_ALLOWED_ORIGIN` | No | Frontend origin for cross-origin browser calls. The backend starts without it (cross-origin requests are then rejected), but the web UI needs it — use `http://localhost:3000` locally and the real Vercel domain in production |
 | `PORT` | No | FastAPI port (default `8000`) |
 | `RATE_LIMIT_MAX_REQUESTS` | No | Recommendation requests allowed per client IP per window (default `5`) |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
+| `MAX_CONCURRENT_STREAMS_PER_IP` | No | Cap on concurrently open SSE progress streams per client IP (default `5`); replaces the requests-per-minute limiter for `/stream` |
+| `SSE_HEARTBEAT_SECONDS` | No | Idle interval after which an open SSE stream sends a keep-alive comment and re-checks the client connection (default `15`) |
+| `REPOSITORY_ANALYSIS_ENABLED` | No | Enable public GitHub repository analysis for HTTP jobs (default `true`). |
+| `REPOSITORY_GITHUB_TOKEN` | No | Server-only credential limited to public GitHub reads. Without it, GitHub's anonymous quota applies. |
+| `REPOSITORY_OSV_SCANNER` | No | Absolute path to an optional offline OSV-Scanner v2 executable. Also set `OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY`. |
+| `GITHUB_MCP_TOKEN` | No | Optional token for the legacy terminal analyzer. |
+| `LOG_FORMAT` | No | Backend log output: `json` (default, one JSON object per line) or `text` (human-readable local dev). |
+| `JOB_THREAD_POOL_SIZE` | No | Max simultaneous agent-run threads (default `8`). |
+| `JOB_TIMEOUT_SECONDS` | No | Hard wall-clock limit per complete agent run, seconds (default `600`). |
+| `MAX_SHUTDOWN_GRACE_SECONDS` | No | Shutdown grace period for in-flight jobs, seconds (default `10`). |
+
+> **GitHub repository analysis** — The HTTP API accepts a public GitHub URL in `github_url` or in the workload text. It resolves the default branch to an exact commit and scans eligible source before calling the model. The job exposes a typed access or scan status over polling and SSE. See the [repository analysis and rollout guide](../README.md#analyze-a-github-repository).
 
 ### 3. Start the backend API
 
-From the repository workspace root (`D:\! Sciqus Internship\AWS Agent` on
-Windows), run:
+From the repository root, run:
 
 ```powershell
 Set-Location .\aws-instance-advisor
@@ -211,8 +222,15 @@ Frontend: `../aws-advisor-ui/` (see root README).
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Liveness probe |
-| `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
+| `GET` | `/api/health/ready` | Readiness probe: local-only checks (required config, Redis PING when configured, integrations status); 503 only when required config is missing |
+| `POST` | `/api/recommend` | Start a job with `message`, `github_url`, or both. Optional `consensus` defaults to `false`. |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
-| `POST` | `/api/recommend/{job_id}/answer` | Reply to a follow-up question `{ "answer": "..." }` |
+| `GET` | `/api/recommend/{job_id}/stream` | Live progress stream (SSE). Sends current state on connect, one event per transition, closes on `done`/`error` |
+| `GET` | `/api/share/{share_id}` | Read a completed shared report. Legacy workload-only shares also accept the job ID. |
+| `POST` | `/api/recommend/{job_id}/answer` | Reply to an agent clarifying question `{ "answer": "..." }` |
+| `POST` | `/api/recommend/{job_id}/followup` | Ask a follow-up question on a completed recommendation `{ "question": "..." }` |
+| `POST` | `/api/recommend/{job_id}/share` | Create a completed-job share link. Repository-backed reports receive a separate share ID and a limited public result. |
+| `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) |
+| `GET` | `/api/runs` | Paginated run history (`?page=1&page_size=20`) |
 
 Job status values: `collecting` → `running` → `awaiting_input` → `done` / `error`

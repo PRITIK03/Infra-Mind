@@ -54,6 +54,17 @@ def test_prompt_requires_scaling_consistent_with_low_concurrency():
     )
 
 
+@patch("app.agent.nodes.system_design_reasoner._maybe_collect_research", return_value=None)
+@patch("app.agent.nodes.system_design_reasoner.invoke_structured")
+def test_reasoner_keeps_max_instances_at_least_as_large_as_minimum(mock_invoke, _mock_research):
+    mock_invoke.return_value = _needs(min_instances=3, max_instances=1)
+
+    state = reason_system_design({"requirements": UserRequirements()})
+
+    assert state["technical_needs"].min_instances == 3
+    assert state["technical_needs"].max_instances == 3
+
+
 def test_gpu_bridge_forces_requires_gpu_and_profile():
     requirements = UserRequirements(gpu_required=True)
     bridged = _apply_deterministic_requirement_bridges(

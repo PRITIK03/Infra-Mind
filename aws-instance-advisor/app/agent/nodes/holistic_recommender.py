@@ -35,6 +35,8 @@ from app.agent.nodes._recommendation_utils import (
     invalid_instance_types,
 )
 from app.agent.state import AgentState
+from app.analysis.fargate import build_containerized_alternative
+from app.analysis.well_architected import build_well_architected_review
 from app.llm.structured import StructuredOutputError, invoke_structured
 from app.models.schemas import (
     CacheCandidate,
@@ -226,24 +228,14 @@ def _skipped_cache(reasoning: str) -> CacheRecommendation:
 _HOURS_PER_MONTH = 730
 
 
-def _find_price(
-    candidates: list, instance_type: str | None
-) -> float | None:
-    """Look up the hourly on-demand price for an instance type from candidates."""
-    if instance_type is None:
-        return None
-    for c in candidates:
-        if c.instance_type == instance_type:
-            return getattr(c, "hourly_price_usd", None)
-    return None
-
-
 def _compute_estimated_cost(
     sdr: SystemDesignRecommendation,
     tn: TechnicalNeeds,
     compute_candidates: list[InstanceCandidate],
     db_candidates: list[DatabaseCandidate],
     cache_candidates: list[CacheCandidate],
+    *,
+    rds_engine: str | None = None,
 ) -> EstimatedCost:
     """
     Compute an estimated monthly on-demand cost from live pricing data.
@@ -252,15 +244,37 @@ def _compute_estimated_cost(
     Database & cache: single-instance hourly price × 730h.
     Any tier whose price is unavailable (None) surfaces as None — never fabricated.
     """
-    compute_price = _find_price(compute_candidates, sdr.compute.recommended_instance)
+    compute_price = next(
+        (candidate.hourly_price_usd for candidate in compute_candidates
+         if candidate.instance_type == sdr.compute.recommended_instance),
+        None,
+    )
     db_price = None
     cache_price = None
 
     if sdr.database.needed and sdr.database.recommended_instance:
-        db_price = _find_price(db_candidates, sdr.database.recommended_instance)
+        candidate = next(
+            (candidate for candidate in db_candidates
+             if candidate.instance_type == sdr.database.recommended_instance),
+            None,
+        )
+        if candidate is not None:
+            prices = candidate.hourly_prices_by_engine
+            if rds_engine or prices:
+                engine = (rds_engine or sdr.database.engine_suggestion or "PostgreSQL").strip().lower()
+                if engine == "postgres":
+                    engine = "postgresql"
+                db_price = next((price for name, price in prices.items() if name.lower() == engine), None)
+            else:
+                db_price = candidate.hourly_price_usd
 
-    if sdr.cache.needed and sdr.cache.recommended_instance:
-        cache_price = _find_price(cache_candidates, sdr.cache.recommended_instance)
+    if sdr.cache.needed and sdr.cache.recommended_instance and sdr.cache.engine:
+        cache_price = next(
+            (candidate.hourly_price_usd for candidate in cache_candidates
+             if candidate.instance_type == sdr.cache.recommended_instance
+             and candidate.engine == sdr.cache.engine),
+            None,
+        )
 
     compute_low = None
     compute_high = None
@@ -277,12 +291,10 @@ def _compute_estimated_cost(
     parts_high = [compute_high, db_monthly, cache_monthly]
     # A tier that is not needed contributes 0 to the total; a tier that is
     # needed but whose price is unavailable makes the total uncomputable.
-    db_needed = sdr.database.needed and sdr.database.recommended_instance
-    cache_needed = sdr.cache.needed and sdr.cache.recommended_instance
     unresolved = (
-        (compute_low is None) or
-        (db_needed and db_monthly is None) or
-        (cache_needed and cache_monthly is None)
+        compute_low is None
+        or ((tn.needs_database or sdr.database.needed) and db_monthly is None)
+        or ((tn.needs_cache or sdr.cache.needed) and cache_monthly is None)
     )
     if not unresolved:
         total_low = round(sum(p or 0 for p in parts_low), 2)
@@ -310,15 +322,19 @@ def _validate_compute(
 def _validate_database(
     result: SystemDesignRecommendation,
     allowed: set[str],
+    target_engine: str | None = None,
 ) -> list[str]:
     bad: list[str] = []
     db = result.database
-    if not db.needed:
-        return bad
+    if not db.needed or not db.recommended_instance:
+        return ["<missing required database recommendation>"]
     if db.recommended_instance is not None and db.recommended_instance not in allowed:
         bad.append(db.recommended_instance)
     if db.alternative_instance is not None and db.alternative_instance not in allowed:
         bad.append(db.alternative_instance)
+    engine = (target_engine or db.engine_suggestion or "").strip().lower() or "postgresql"
+    if engine not in {"postgresql", "postgres", "mysql", "mariadb"}:
+        bad.append(f"<unsupported RDS engine: {engine}>")
     return bad
 
 
@@ -326,9 +342,13 @@ def _validate_cache(
     result: SystemDesignRecommendation,
     pairs: set[tuple],
 ) -> list[str]:
-    if not result.cache.needed:
-        return []
-    return invalid_cache_pairs(result.cache, pairs)
+    cache = result.cache
+    if not cache.needed or not cache.recommended_instance or not cache.engine:
+        return ["<missing required cache instance and engine>"]
+    bad = invalid_cache_pairs(cache, pairs)
+    if bool(cache.alternative_instance) != bool(cache.alternative_engine):
+        bad.append("<incomplete alternative cache instance and engine>")
+    return bad
 
 
 # ── Retry correction prompts ──────────────────────────────────────────────
@@ -355,9 +375,11 @@ def _database_correction(
     return (
         f"{base_prompt}\n\n"
         f"Your previous database recommendation included {invalid_joined}, which "
-        f"is not in the live RDS candidate set. You MUST choose "
-        f"database.recommended_instance and alternative_instance only from: "
-        f"{allowed_joined}."
+        f"is not in the live RDS candidate set. You MUST set "
+        f"database.recommended_instance to one value from this exact list, and "
+        f"database.alternative_instance to a DIFFERENT value from the same list "
+        f"(or null if no second option makes sense): {allowed_joined}. "
+        "Use PostgreSQL, MySQL or MariaDB and preserve an explicit database target."
     )
 
 
@@ -376,17 +398,16 @@ def _cache_correction(
 
 # ── Main node ─────────────────────────────────────────────────────────────
 
-def _build_prompt(
-    state: AgentState,
-    needs_db: bool,
-    needs_cache: bool,
-    compute_text: str,
-    db_text: str | None,
-    cache_text: str | None,
-    lb_needed: bool,
-) -> str:
+def _build_prompt(state: AgentState) -> str:
     requirements = state["requirements"]
     needs = state["technical_needs"]
+    db_candidates = state.get("database_candidates") or []
+    cache_candidates = state.get("cache_candidates") or []
+    needs_db = needs.needs_database and bool(db_candidates)
+    needs_cache = needs.needs_cache and bool(cache_candidates)
+    db_text = _format_database(db_candidates) if needs_db else None
+    cache_text = _format_cache(cache_candidates) if needs_cache else None
+    lb_needed = needs.load_balancer_needed
 
     database_section = (
         _DB_CANDIDATES_SECTION.format(db_candidates=db_text)
@@ -402,10 +423,10 @@ def _build_prompt(
     cache_rule = _CACHE_RULE_PICK if needs_cache else _CACHE_RULE_SKIP
     lb_instruction = _LB_INSTRUCTION_NEEDED if lb_needed else _LB_INSTRUCTION_NOT_NEEDED
 
-    return _PROMPT_TEMPLATE.format(
+    prompt = _PROMPT_TEMPLATE.format(
         requirements=requirements.model_dump_json(indent=2),
         technical_needs=needs.model_dump_json(indent=2),
-        compute_candidates=compute_text,
+        compute_candidates=_format_compute(state.get("instance_candidates") or []),
         database_section=database_section,
         cache_section=cache_section,
         database_rule=db_rule,
@@ -413,9 +434,33 @@ def _build_prompt(
         lb_needed=lb_needed,
         lb_instruction=lb_instruction,
     )
+    if state.get("repository_report"):
+        context = state["repo_analysis"]
+        prompt += (
+            f"\n\nRepository evidence for context: {context.analysis_note}. "
+            "Explain deployment dependencies and any transition from repository storage to the stated production database."
+        )
+    if engine := state.get("target_rds_engine"):
+        prompt += f"\nUse {engine} for database.engine_suggestion."
+    if assumptions := state.get("repository_assumptions"):
+        prompt += "\nKeep this sizing provisional: " + " ".join(assumptions)
+    return prompt
 
 
-def recommend_system_design(state: AgentState) -> AgentState:
+def build_system_design_recommendation(
+    state: AgentState,
+    *,
+    model_override: str | None = None,
+    corrections: list[str] | None = None,
+) -> SystemDesignRecommendation:
+    """Run the full holistic recommendation pipeline and return the result.
+
+    This is the complete holistic-recommend step without graph mutation, so
+    consensus mode can reuse the exact same inputs and validations against a
+    second model while leaving the primary recommendation in the graph state
+    untouched. Grounding repair supplies corrections and gets exactly one
+    synthesis attempt, with the same validation and deterministic enrichment.
+    """
     needs: TechnicalNeeds | None = state["technical_needs"]
     requirements = state["requirements"]
     compute_candidates = state.get("instance_candidates") or []
@@ -439,31 +484,29 @@ def recommend_system_design(state: AgentState) -> AgentState:
     db_allowed = {c.instance_type for c in db_candidates} if needs_db else set()
     db_allowed_list = [c.instance_type for c in db_candidates] if needs_db else []
     cache_pairs = allowed_cache_pairs(cache_candidates) if needs_cache else set()
+    target_rds_engine = state.get("target_rds_engine")
 
-    # Format candidate texts.
-    compute_text = _format_compute(compute_candidates)
-    db_text = _format_database(db_candidates) if needs_db else None
-    cache_text = _format_cache(cache_candidates) if needs_cache else None
-
-    prompt = _build_prompt(
-        state, needs_db, needs_cache,
-        compute_text, db_text, cache_text, lb_needed,
-    )
+    prompt = _build_prompt(state)
+    if corrections is not None:
+        prompt += (
+            "\n\nCRITICAL CORRECTIONS REQUIRED — resolve these contradictions:\n"
+            + "\n".join(f"  - {issue}" for issue in corrections)
+        )
 
     # ── LLM call ──────────────────────────────────────────────────────────
     try:
         result: SystemDesignRecommendation = invoke_structured(
-            SystemDesignRecommendation, prompt
+            SystemDesignRecommendation, prompt, model_override=model_override
         )
     except StructuredOutputError as exc:
         raise HolisticRecommendationError(str(exc)) from exc
 
     # ── Validate all three tiers; retry once if any are invalid ───────────
     bad_compute = _validate_compute(result, compute_allowed)
-    bad_db = _validate_database(result, db_allowed) if needs_db else []
+    bad_db = _validate_database(result, db_allowed, target_rds_engine) if needs_db else []
     bad_cache = _validate_cache(result, cache_pairs) if needs_cache else []
 
-    if bad_compute or bad_db or bad_cache:
+    if (bad_compute or bad_db or bad_cache) and corrections is None:
         # Build a single correction prompt addressing all violations at once.
         retry_prompt = prompt
         if bad_compute:
@@ -474,30 +517,38 @@ def recommend_system_design(state: AgentState) -> AgentState:
             retry_prompt = _cache_correction(retry_prompt, bad_cache, cache_candidates)
 
         try:
-            result = invoke_structured(SystemDesignRecommendation, retry_prompt)
+            result = invoke_structured(
+                SystemDesignRecommendation, retry_prompt, model_override=model_override
+            )
         except StructuredOutputError as exc:
             raise HolisticRecommendationError(str(exc)) from exc
 
         # Final check — one retry only.
         bad_compute = _validate_compute(result, compute_allowed)
-        bad_db = _validate_database(result, db_allowed) if needs_db else []
+        bad_db = _validate_database(result, db_allowed, target_rds_engine) if needs_db else []
         bad_cache = _validate_cache(result, cache_pairs) if needs_cache else []
 
-        if bad_compute:
-            raise HolisticRecommendationError(
-                f"Model recommended compute {bad_compute[0]!r}, "
-                "which is not in the live EC2 candidate set."
-            )
-        if bad_db:
-            raise HolisticRecommendationError(
-                f"Model recommended database {bad_db[0]!r}, "
-                "which is not in the live RDS candidate set."
-            )
-        if bad_cache:
-            raise HolisticRecommendationError(
-                f"Model recommended cache {bad_cache[0]}, "
-                "which is not a valid (instance_type, engine) pair."
-            )
+    if bad_compute:
+        raise HolisticRecommendationError(
+            f"Model recommended compute {bad_compute[0]!r}, "
+            "which is not in the live EC2 candidate set."
+        )
+    if bad_db:
+        raise HolisticRecommendationError(
+            f"Model recommended database {bad_db[0]!r}, "
+            "which is not in the live RDS candidate set."
+        )
+    if bad_cache:
+        raise HolisticRecommendationError(
+            f"Model recommended cache {bad_cache[0]}, "
+            "which is not a valid (instance_type, engine) pair."
+        )
+
+    # Verification and consensus are pipeline-owned, never model assertions.
+    result = result.model_copy(update={
+        "grounding_passed": None, "grounding_notes": [], "consensus_result": None,
+        "deployment_handoff": None,
+    })
 
     # ── Enforce load-balancer invariant in code (not LLM-derived) ─────────
     # The LLM fills in load_balancer_type and why, but needed must always
@@ -512,22 +563,74 @@ def recommend_system_design(state: AgentState) -> AgentState:
     # If the workload doesn't need a tier, replace whatever the LLM said
     # with the canonical needed=False value constructed in code.
     if not needs.needs_database:
-        result = result.model_copy(update={"database": _skipped_database(needs.reasoning)})
+        database = _skipped_database(needs.reasoning)
+        if requirements.database_engine == "external":
+            database.why = "Keep the existing database. This plan includes no replacement RDS instance."
+        elif requirements.database_engine not in (None, "none"):
+            database.why = f"Plan persistence for {requirements.database_engine} separately. This plan includes no RDS instance."
+        result = result.model_copy(update={"database": database})
+    elif not db_candidates:
+        result = result.model_copy(update={"database": DatabaseRecommendation(
+            needed=False, confidence="low",
+            why="Database required, but no catalog candidates are available. Size this tier before deployment.",
+        )})
+    else:
+        engine = (target_rds_engine or result.database.engine_suggestion or "").strip().lower() or "postgresql"
+        result = result.model_copy(update={
+            "database": result.database.model_copy(update={"engine_suggestion": {
+                "postgres": "PostgreSQL", "postgresql": "PostgreSQL", "mysql": "MySQL", "mariadb": "MariaDB",
+            }[engine]}),
+        })
     if not needs.needs_cache:
         result = result.model_copy(update={"cache": _skipped_cache(needs.reasoning)})
+    elif not cache_candidates:
+        result = result.model_copy(update={"cache": CacheRecommendation(
+            needed=False, confidence="low",
+            why="Cache required, but no catalog candidates are available. Size this tier before deployment.",
+        )})
 
     # ── Compute estimated monthly cost from live pricing ──────────────────────
     # None when pricing data is unavailable for any needed tier.
     result = result.model_copy(
         update={
             "estimated_cost": _compute_estimated_cost(
-                result, needs, compute_candidates, db_candidates, cache_candidates
+                result, needs, compute_candidates, db_candidates, cache_candidates,
+                rds_engine=target_rds_engine,
             ),
             "repo_analysis_note": state.get("repo_analysis_note"),
         }
     )
 
-    state["system_design_recommendation"] = result
+    # ── Deterministic Well-Architected-style review ───────────────────────────
+    # Pure post-processing over fields this recommendation now holds plus
+    # technical_needs.  No LLM call, no graph node — just attached data, so it
+    # costs nothing extra and is fully reproducible.
+    result = result.model_copy(
+        update={
+            "well_architected_review": build_well_architected_review(result, needs)
+        }
+    )
+
+    # ── Deterministic ECS Fargate alternative ────────────────────────────────
+    # Same post-processing pattern: only present when repo analysis detected a
+    # Dockerfile.  None (absent) otherwise — no placeholder, no extra cost.
+    result = result.model_copy(
+        update={
+            "containerized_alternative": build_containerized_alternative(
+                result,
+                needs,
+                state.get("repo_analysis"),
+                compute_candidates,
+            )
+        }
+    )
+
+    return result
+
+
+def recommend_system_design(state: AgentState) -> AgentState:
+    """LangGraph node: build the primary recommendation and store it in state."""
+    state["system_design_recommendation"] = build_system_design_recommendation(state)
     return state
 
 

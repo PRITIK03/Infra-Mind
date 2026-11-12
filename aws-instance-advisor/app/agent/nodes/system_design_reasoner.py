@@ -21,7 +21,7 @@ from typing import Any
 from app.agent.state import AgentState
 from app.llm.client import get_chat_model
 from app.llm.structured import StructuredOutputError, invoke_structured
-from app.models.schemas import ResourceProfile, TechnicalNeeds, TrafficPattern
+from app.models.schemas import SUPPORTED_RDS_ENGINES, ResourceProfile, TechnicalNeeds, TrafficPattern
 from app.tools.web_search import try_get_search_tool
 
 
@@ -223,9 +223,7 @@ def _format_repo_context(repo_analysis: Any) -> str:
     """
     Render RepoAnalysis as a clearly-scoped context block.
 
-    This is deterministic data derived from the user's own repository (not
-    web-scraped), so it needs no injection sandbox — but it is still
-    delimited so the model treats it as data rather than instructions.
+    Repository analysis supplies derived facts rather than source snippets.
     """
     notable = ", ".join(repo_analysis.notable_dependencies) or "none detected"
     return (
@@ -307,13 +305,38 @@ def reason_system_design(state: AgentState) -> AgentState:
     repo_analysis = state.get("repo_analysis")
     if repo_analysis is not None:
         prompt = f"{prompt}\n\n{_format_repo_context(repo_analysis)}"
+    if assumptions := state.get("repository_assumptions"):
+        prompt += "\n\nProvisional inputs. Keep these visible as assumptions: " + " ".join(assumptions)
+
+    explicit_database = requirements.database_engine
+    repository = state.get("repository_report")
+    target = explicit_database if explicit_database in SUPPORTED_RDS_ENGINES else None
+    detected_non_rds = None
+    if not explicit_database and repository is not None:
+        stores = set(repository.configured_databases) - {"Redis"}
+        if len(stores) == 1:
+            engine = next(iter(stores))
+            if engine in SUPPORTED_RDS_ENGINES:
+                target = engine
+            elif engine in ("SQLite", "MongoDB", "DynamoDB"):
+                detected_non_rds = engine
+    state["target_rds_engine"] = target
+    if target:
+        prompt += f"\n\nThe RDS database target is {target}. Keep this engine. Explain any migration from the repository's current configuration."
+    elif explicit_database or detected_non_rds:
+        prompt += (
+            f"\n\nThe database context is {explicit_database or detected_non_rds}. "
+            "Do not provision a replacement RDS database. Explain any persistence or external setup the user must manage."
+        )
 
     try:
         result = invoke_structured(TechnicalNeeds, prompt)
     except StructuredOutputError as exc:
         raise ReasoningError(str(exc)) from exc
 
-    state["technical_needs"] = _apply_deterministic_requirement_bridges(
-        requirements, result
-    )
+    result = _apply_deterministic_requirement_bridges(requirements, result)
+    result.max_instances = max(result.min_instances, result.max_instances)
+    if target or explicit_database or detected_non_rds:
+        result = result.model_copy(update={"needs_database": target is not None})
+    state["technical_needs"] = result
     return state

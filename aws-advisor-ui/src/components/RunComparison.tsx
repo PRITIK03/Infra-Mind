@@ -86,7 +86,7 @@ export function RunComparison({ runs, onClose }: Props) {
         <button
           type="button"
           onClick={onClose}
-          className="border border-border-subtle px-3 py-1.5 font-mono text-xs text-ink-dim hover:text-amber hover:border-amber/40 hover:bg-white/[0.03]"
+          className="border border-border-subtle px-3 py-1.5 font-mono text-xs text-ink-dim uppercase tracking-wider transition-colors duration-150 hover:text-amber hover:border-amber/40 hover:bg-white/[0.03]"
         >
           close
         </button>
@@ -127,9 +127,33 @@ export function RunComparison({ runs, onClose }: Props) {
               const changed = firstValue !== secondValue;
               return (
                 <tr key={row.key} className="border-b border-border-faint">
-                  <th className="text-left px-4 py-2.5 font-mono text-xs text-ink-dim font-normal">{row.label}</th>
-                  <td className={`px-4 py-2.5 font-mono text-xs ${changed ? "text-amber" : "text-ink"}`}>{firstValue}</td>
-                  <td className={`px-4 py-2.5 font-mono text-xs ${changed ? "text-amber" : "text-ink"}`}>{secondValue}</td>
+                  <th className="text-left px-4 py-2.5 font-mono text-xs text-ink-dim font-normal">
+                    {row.label}
+                  </th>
+                  <td className="px-4 py-2.5">
+                    <span className="inline-flex items-center gap-1.5">
+                      {changed && (
+                        <span
+                          className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ backgroundColor: "rgba(232,163,61,0.9)" }}
+                          aria-label="value differs"
+                        />
+                      )}
+                      <span className="font-mono text-xs text-ink">{firstValue}</span>
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className="inline-flex items-center gap-1.5">
+                      {changed && (
+                        <span
+                          className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ backgroundColor: "rgba(232,163,61,0.9)" }}
+                          aria-label="value differs"
+                        />
+                      )}
+                      <span className="font-mono text-xs text-ink">{secondValue}</span>
+                    </span>
+                  </td>
                 </tr>
               );
             })}

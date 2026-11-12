@@ -304,7 +304,7 @@ def get_runs(*, page: int = 1, page_size: int = 20) -> dict[str, Any]:
             "page": page,
             "page_size": page_size,
             "observability_configured": True,
-            "error": str(exc),
+            "error": "Failed to fetch run history",
         }
 
 

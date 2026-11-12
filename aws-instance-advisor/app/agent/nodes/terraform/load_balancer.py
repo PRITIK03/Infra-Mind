@@ -45,6 +45,7 @@ resource "aws_lb" "app" {
   name               = "${var.app_name}-lb"
   internal           = false
   load_balancer_type = "network"
+  security_groups    = [aws_security_group.lb.id]
   subnets            = data.aws_subnets.default.ids
 
   tags = {
@@ -59,7 +60,8 @@ resource "aws_lb_target_group" "app" {
   vpc_id   = data.aws_vpc.default.id
 
   health_check {
-    port = var.app_port
+    protocol = "TCP"
+    port     = "traffic-port"
   }
 }
 
@@ -76,9 +78,9 @@ resource "aws_lb_listener" "app" {
 """
 
 
-_OUTPUT_ALB = """\
+_OUTPUT_LB = """\
 output "load_balancer_dns_name" {
-  description = "DNS name of the application load balancer."
+  description = "DNS name of the load balancer."
   value       = aws_lb.app.dns_name
 }
 """
@@ -88,6 +90,11 @@ _OUTPUT_RDS = """\
 output "database_endpoint" {
   description = "RDS endpoint (address:port)."
   value       = "${aws_db_instance.app.address}:${aws_db_instance.app.port}"
+}
+
+output "database_master_secret_arn" {
+  description = "ARN of the RDS-managed master credential in Secrets Manager."
+  value       = aws_db_instance.app.master_user_secret[0].secret_arn
 }
 """
 

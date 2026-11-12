@@ -2,9 +2,7 @@
 
 ## 1. What This Project Actually Is (and Isn't)
 
-**What it is:** **InfraMind (AWS Instance Advisor)** is an autonomous, multi-tier AWS infrastructure architecture and sizing agent powered by **LangGraph**, **FastAPI**, and **Next.js**. Given freeform application requirements (or a GitHub repository URL), it conducts requirements validation, queries real-time EC2 instance catalog and pricing data via the Vantage API, recommends rightsized compute/database/cache tiers, performs automated Well-Architected reliability/cost audits, runs anti-hallucination consistency checks, and produces complete, deployable Terraform (HCL) configurations.
-
-**What it is not:** It is **not** an unbounded autonomous execution agent that deploys directly to live AWS clouds or executes arbitrary shell code. It does **not** rely on unconstrained LLM hallucinations for Terraform generation or pricing data; all infrastructure configurations, cost boundaries, and engine validations are generated via deterministic, type-safe Python engines grounded in verified cloud provider catalogs.
+InfraMind uses LangGraph, FastAPI, and Next.js to size AWS infrastructure from workload details, a public GitHub repository, or both. It grounds recommended compute, database, and cache sizes in Vantage catalog data, runs deterministic architecture checks, and exports Terraform for review in the target AWS account.
 
 ---
 
@@ -98,7 +96,7 @@ flowchart TD
 ### Decision 1: Deterministic Terraform Generation over LLM Code Generation
 * **Decision:** Terraform (HCL) files (`main.tf`, `variables.tf`, `outputs.tf`) are synthesized deterministically using strictly typed template and string builder modules (`app.agent.nodes.terraform.*`) rather than asking the LLM to write raw HCL code.
 * **Alternative Considered:** Prompting the LLM to output freeform `.tf` code blocks or structured JSON representations of HCL.
-* **Why Rejected:** LLM-generated Terraform is prone to subtle syntax errors, deprecated provider arguments, non-existent instance types, and dangerous security anti-patterns (e.g. `0.0.0.0/0` ingress on database security groups). Deterministic assembly from validated Pydantic models ensures syntactically valid HCL, exact provider version pinning (`>= 5.73.0`), strict least-privilege security group cross-referencing, and zero additional token latency.
+* **Trade-offs.** Templates give predictable resource and security group wiring, with no extra model call. The AWS provider constraint specifies a minimum version (`>= 5.73.0`). The default VPC and stock AMI make the export a starting point for [workload-specific deployment](README.md#using-the-terraform-export).
 
 ### Decision 2: Server-Sent Events (SSE) over WebSockets for Real-Time Progress
 * **Decision:** Streaming real-time job progress via HTTP Server-Sent Events (`GET /api/recommend/{job_id}/stream`) with automated client-side fallback to standard HTTP polling (`GET /api/recommend/{job_id}`).
@@ -142,4 +140,5 @@ flowchart TD
 * **Job and share access:** The original job ID is an access capability. Repository-backed runs are excluded from public history. A separate public share ID resolves to an allowlisted AWS summary, without the original job ID, repository findings, prompts, or follow-up history.
 
 * **SSE / Browser Verification:** The raw SSE path was verified against the backend. Playwright now exercises live job updates and the polling fallback in Chromium against a local production frontend build and a fixture-backed API. Verification against deployed infrastructure is a separate release check.
+* **Terraform validation.** Six generated configurations passed `terraform validate` with AWS provider versions 5.73.0 and 6.73.0, covering ALB, Arm EC2 with NLB, RDS, and all three cache engines. Resource availability and deployment still require a plan in the target AWS account and region.
 

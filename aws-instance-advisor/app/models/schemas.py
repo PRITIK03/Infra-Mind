@@ -294,8 +294,8 @@ class DatabaseCandidate(BaseModel):
 class CacheCandidate(BaseModel):
     """
     A single ElastiCache node type, specific to one engine.
-    Node types are not universal across engines — a given type may only
-    support Memcached, Redis, or Valkey, never all three.
+    The catalog can return the same node type for multiple engines, each with
+    its own price.
     """
 
     instance_type: str = Field(..., description="e.g. 'cache.t3.medium', 'cache.r6g.large'")
@@ -390,8 +390,8 @@ class EstimatedCost(BaseModel):
     """
     Estimated monthly on-demand cost for the recommended architecture.
 
-    All fields are Optional[float]: None means pricing data was unavailable
-    for that tier rather than a fabricated zero.
+    Unused tiers and tiers with unavailable pricing have no estimate.
+    A total is available only when every required tier is priced.
     """
 
     compute_monthly_low: Optional[float] = Field(
@@ -412,11 +412,11 @@ class EstimatedCost(BaseModel):
     )
     total_monthly_low: Optional[float] = Field(
         default=None,
-        description="Sum of compute low + database + cache (any None → None).",
+        description="Sum of compute low and all required database and cache tiers, when priced.",
     )
     total_monthly_high: Optional[float] = Field(
         default=None,
-        description="Sum of compute high + database + cache (any None → None).",
+        description="Sum of compute high and all required database and cache tiers, when priced.",
     )
 
 

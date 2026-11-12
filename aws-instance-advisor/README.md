@@ -1,6 +1,6 @@
 # InfraMind — AWS Instance Advisor
 
-An AI agent that gathers your workload requirements, reasons about system design, researches live AWS instance data across compute, database, and cache tiers, and recommends the optimal setup — with deployable Terraform files generated automatically.
+InfraMind sizes AWS infrastructure from workload details, a public GitHub repository, or both. It recommends compute, database, and cache resources using live catalog data and exports a [Terraform starting point](../README.md#using-the-terraform-export).
 
 This folder is the **backend** of the InfraMind monorepo. The Next.js frontend
 lives alongside it at `../aws-advisor-ui/`. See the [root README](../README.md)
@@ -22,7 +22,7 @@ Do not nest or recreate a second frontend under this backend directory.
 3. It reasons about system design — concurrency, resource profile, traffic pattern, scaling strategy.
 4. It researches live EC2, RDS, and ElastiCache instance data.
 5. It returns a full architecture recommendation (compute + database + cache + load balancer) with confidence scores and trade-offs.
-6. Terraform files for the recommended setup are written to `terraform_output/`.
+6. Download the Terraform from the web result or find the CLI export in `terraform_output/`.
 
 ---
 
@@ -31,8 +31,8 @@ Do not nest or recreate a second frontend under this backend directory.
 | Tool | Minimum version |
 |------|----------------|
 | Python | 3.11 |
-| Node.js | 18 |
-| npm | 9 |
+| Node.js | 22.13+ (24 LTS used in CI) |
+| npm | 10 |
 
 ---
 

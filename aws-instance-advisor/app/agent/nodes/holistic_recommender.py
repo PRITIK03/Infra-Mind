@@ -228,18 +228,6 @@ def _skipped_cache(reasoning: str) -> CacheRecommendation:
 _HOURS_PER_MONTH = 730
 
 
-def _find_price(
-    candidates: list, instance_type: str | None
-) -> float | None:
-    """Look up the hourly on-demand price for an instance type from candidates."""
-    if instance_type is None:
-        return None
-    for c in candidates:
-        if c.instance_type == instance_type:
-            return getattr(c, "hourly_price_usd", None)
-    return None
-
-
 def _compute_estimated_cost(
     sdr: SystemDesignRecommendation,
     tn: TechnicalNeeds,
@@ -256,22 +244,37 @@ def _compute_estimated_cost(
     Database & cache: single-instance hourly price × 730h.
     Any tier whose price is unavailable (None) surfaces as None — never fabricated.
     """
-    compute_price = _find_price(compute_candidates, sdr.compute.recommended_instance)
+    compute_price = next(
+        (candidate.hourly_price_usd for candidate in compute_candidates
+         if candidate.instance_type == sdr.compute.recommended_instance),
+        None,
+    )
     db_price = None
     cache_price = None
 
     if sdr.database.needed and sdr.database.recommended_instance:
-        if rds_engine is None:
-            db_price = _find_price(db_candidates, sdr.database.recommended_instance)
-        else:
-            db_price = next(
-                (candidate.hourly_prices_by_engine.get(rds_engine) for candidate in db_candidates
-                 if candidate.instance_type == sdr.database.recommended_instance),
-                None,
-            )
+        candidate = next(
+            (candidate for candidate in db_candidates
+             if candidate.instance_type == sdr.database.recommended_instance),
+            None,
+        )
+        if candidate is not None:
+            prices = candidate.hourly_prices_by_engine
+            if rds_engine or prices:
+                engine = (rds_engine or sdr.database.engine_suggestion or "PostgreSQL").strip().lower()
+                if engine == "postgres":
+                    engine = "postgresql"
+                db_price = next((price for name, price in prices.items() if name.lower() == engine), None)
+            else:
+                db_price = candidate.hourly_price_usd
 
-    if sdr.cache.needed and sdr.cache.recommended_instance:
-        cache_price = _find_price(cache_candidates, sdr.cache.recommended_instance)
+    if sdr.cache.needed and sdr.cache.recommended_instance and sdr.cache.engine:
+        cache_price = next(
+            (candidate.hourly_price_usd for candidate in cache_candidates
+             if candidate.instance_type == sdr.cache.recommended_instance
+             and candidate.engine == sdr.cache.engine),
+            None,
+        )
 
     compute_low = None
     compute_high = None
@@ -288,12 +291,10 @@ def _compute_estimated_cost(
     parts_high = [compute_high, db_monthly, cache_monthly]
     # A tier that is not needed contributes 0 to the total; a tier that is
     # needed but whose price is unavailable makes the total uncomputable.
-    db_needed = sdr.database.needed and sdr.database.recommended_instance
-    cache_needed = sdr.cache.needed and sdr.cache.recommended_instance
     unresolved = (
-        (compute_low is None) or
-        (db_needed and db_monthly is None) or
-        (cache_needed and cache_monthly is None)
+        compute_low is None
+        or ((tn.needs_database or sdr.database.needed) and db_monthly is None)
+        or ((tn.needs_cache or sdr.cache.needed) and cache_monthly is None)
     )
     if not unresolved:
         total_low = round(sum(p or 0 for p in parts_low), 2)

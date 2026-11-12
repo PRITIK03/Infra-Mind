@@ -112,21 +112,13 @@ def _rule_grounding_failed(
 def _rule_security_groups_are_baseline(
     sdr: SystemDesignRecommendation, tn: TechnicalNeeds
 ) -> WellArchitectedFinding | None:
-    """
-    Mirror the Terraform header's security warning.
-
-    Always emitted: the generated Terraform always contains the same baseline
-    security groups and placeholder DB credentials, so this is a property of
-    the deliverable rather than of any particular workload.  Surfacing it here
-    means it is visible without opening the Terraform tab.
-    """
+    """Surface the Terraform template's network assumptions in the report."""
     return WellArchitectedFinding(
         pillar="security",
         severity="info",
         message=(
-            "The generated Terraform includes baseline security groups and a "
-            "placeholder database password — tighten the rules and move the "
-            "credential to a secret manager before applying."
+            "The Terraform uses the account's default VPC and baseline security groups. "
+            "Review inbound access, private subnet placement, and TLS before applying."
         ),
     )
 
@@ -157,16 +149,15 @@ def _rule_cache_absent_for_read_heavy_profile(
 def _rule_cost_not_estimated(
     sdr: SystemDesignRecommendation, tn: TechnicalNeeds
 ) -> WellArchitectedFinding | None:
-    """estimated_cost is None → no monthly cost could be computed."""
-    if sdr.estimated_cost is not None:
+    """Flag an unavailable total even when some tiers have prices."""
+    if sdr.estimated_cost is not None and sdr.estimated_cost.total_monthly_low is not None:
         return None
     return WellArchitectedFinding(
         pillar="cost_optimization",
         severity="info",
         message=(
-            "estimated_cost is None: live pricing was unavailable for at least "
-            "one needed tier, so no monthly cost estimate accompanies this "
-            "recommendation."
+            "The monthly total is unavailable because at least one required tier "
+            "has no price or sizing recommendation."
         ),
     )
 

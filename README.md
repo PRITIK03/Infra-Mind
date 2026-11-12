@@ -3,7 +3,7 @@
 [![Backend Tests](https://github.com/PRITIK03/Infra-Mind/actions/workflows/backend-tests.yml/badge.svg)](https://github.com/PRITIK03/Infra-Mind/actions/workflows/backend-tests.yml)
 [![Frontend Tests](https://github.com/PRITIK03/Infra-Mind/actions/workflows/frontend-tests.yml/badge.svg)](https://github.com/PRITIK03/Infra-Mind/actions/workflows/frontend-tests.yml)
 
-An AI agent that gathers your workload requirements, reasons about system design, researches live AWS instance data across compute, database, and cache tiers, and recommends the optimal setup — with deployable Terraform files generated automatically.
+InfraMind sizes AWS infrastructure from workload details, a public GitHub repository, or both. It recommends compute, database, and cache resources using live catalog data and exports a Terraform starting point.
 
 This repository is a monorepo with two projects:
 
@@ -21,7 +21,7 @@ aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
 3. It reasons about system design — concurrency, resource profile, traffic pattern, scaling strategy.
 4. It researches live EC2, RDS, and ElastiCache instance data.
 5. It returns a full architecture recommendation (compute + database + cache + load balancer) with confidence scores and trade-offs.
-6. Terraform files for the recommended setup are written to `aws-instance-advisor/terraform_output/`.
+6. Download the Terraform from the web result or find the CLI export in `aws-instance-advisor/terraform_output/`.
 
 ---
 
@@ -30,7 +30,7 @@ aws-advisor-ui/         ← Next.js frontend (chat UI + results dashboard)
 | Tool | Minimum version |
 |------|----------------|
 | Python | 3.11 |
-| Node.js | 18 |
+| Node.js | 22.13+ (24 LTS used in CI) |
 | npm | 10 |
 
 ---
@@ -245,6 +245,14 @@ docker run -p 8000:8000 --env-file .env infra-mind
 ```
 
 ---
+
+## Using the Terraform export
+
+The export assumes the account's default VPC, default subnets, and a stock Amazon Linux 2023 image. Configure your private subnets, application bootstrap, TLS, IAM, scaling policies, and monitoring for the target workload. The RDS template uses Secrets Manager for its master credential, encrypted storage, seven days of automated backups, and deletion protection. Grant the application a separate least-privilege database user.
+
+Run `terraform init`, `terraform validate`, and `terraform plan` for the target account and region before applying. The monthly estimate uses `us-east-1` prices for the selected compute, database, and cache instances. Include storage, networking, load balancer, and Secrets Manager charges in your deployment budget.
+
+When updating an older export in place, review the plan for replacements. Enabling encryption on an existing unencrypted RDS database requires a snapshot migration. An NLB created without security groups requires replacement to use one.
 
 ## Deploying to Vercel
 

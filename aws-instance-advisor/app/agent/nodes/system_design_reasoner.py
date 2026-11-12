@@ -335,6 +335,7 @@ def reason_system_design(state: AgentState) -> AgentState:
         raise ReasoningError(str(exc)) from exc
 
     result = _apply_deterministic_requirement_bridges(requirements, result)
+    result.max_instances = max(result.min_instances, result.max_instances)
     if target or explicit_database or detected_non_rds:
         result = result.model_copy(update={"needs_database": target is not None})
     state["technical_needs"] = result

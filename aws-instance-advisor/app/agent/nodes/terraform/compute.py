@@ -6,7 +6,6 @@ from __future__ import annotations
 
 def _launch_template_asg(
     *,
-    compute_instance: str,
     min_instances: int,
     max_instances: int,
     with_target_group: bool,
@@ -20,9 +19,13 @@ def _launch_template_asg(
 resource "aws_launch_template" "app" {{
   name_prefix = "${{var.app_name}}-lt-"
   image_id = data.aws_ami.app.id
-  instance_type = "{compute_instance}"
+  instance_type = data.aws_ec2_instance_type.app.instance_type
 
   vpc_security_group_ids = [aws_security_group.compute.id]
+
+  metadata_options {{
+    http_tokens = "required"
+  }}
 
   tag_specifications {{
     resource_type = "instance"

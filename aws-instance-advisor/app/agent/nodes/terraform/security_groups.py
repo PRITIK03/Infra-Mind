@@ -3,37 +3,31 @@ Security group resource definitions for LB, compute, database, and cache tiers.
 """
 from __future__ import annotations
 
-_SG_LB = """\
-resource "aws_security_group" "lb" {
-  name        = "${var.app_name}-lb-sg"
-  description = "Allow 80/443 inbound from anywhere to load balancer."
+def _sg_lb(listener_port: str) -> str:
+    return f"""\
+resource "aws_security_group" "lb" {{
+  name        = "${{var.app_name}}-lb-sg"
+  description = "Allow inbound traffic on the public load balancer listener."
   vpc_id      = data.aws_vpc.default.id
 
-  ingress {
-    from_port   = 80
-    to_port     = 80
+  ingress {{
+    from_port   = {listener_port}
+    to_port     = {listener_port}
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-  }
+  }}
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
+  egress {{
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
-  }
+  }}
 
-  tags = {
-    Name = "${var.app_name}-lb-sg"
-  }
-}
+  tags = {{
+    Name = "${{var.app_name}}-lb-sg"
+  }}
+}}
 """
 
 

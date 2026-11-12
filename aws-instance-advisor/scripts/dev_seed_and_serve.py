@@ -21,6 +21,9 @@ os.environ.setdefault("CORS_ALLOWED_ORIGIN", "http://localhost:3000")
 os.environ.setdefault("PORT", "8000")
 os.environ.setdefault("LOG_FORMAT", "text")
 
+for name in ("DATABASE_URL", "REDIS_URL", "SENTRY_DSN"):
+    os.environ[name] = ""
+
 import time
 
 import uvicorn

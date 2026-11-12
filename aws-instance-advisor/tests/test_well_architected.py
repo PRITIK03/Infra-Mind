@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from app.analysis.well_architected import build_well_architected_review
 from app.models.schemas import (
     CacheEngine,
@@ -264,13 +266,14 @@ def test_rule_cache_absent_for_read_heavy_does_not_fire_for_other_profiles():
 
 
 # ---------------------------------------------------------------------------
-# Rule 7 — cost_optimization: estimated_cost is None
+# Rule 7 — cost_optimization: monthly total is unavailable
 # ---------------------------------------------------------------------------
 
 
-def test_rule_cost_not_estimated_fires():
-    findings = build_well_architected_review(_sdr(estimated_cost=None), _needs())
-    hit = [f for f in findings if "no monthly cost estimate" in f.message]
+@pytest.mark.parametrize("cost", [None, EstimatedCost(compute_monthly_low=42.0)])
+def test_rule_cost_not_estimated_fires(cost):
+    findings = build_well_architected_review(_sdr(estimated_cost=cost), _needs())
+    hit = [f for f in findings if "monthly total is unavailable" in f.message]
     assert len(hit) == 1
     assert hit[0].pillar == "cost_optimization"
     assert hit[0].severity == "info"
@@ -280,7 +283,7 @@ def test_rule_cost_not_estimated_does_not_fire_when_cost_present():
     findings = build_well_architected_review(
         _sdr(estimated_cost=EstimatedCost(total_monthly_low=42.0)), _needs()
     )
-    assert not [f for f in findings if "no monthly cost estimate" in f.message]
+    assert not [f for f in findings if "monthly total is unavailable" in f.message]
 
 
 # ---------------------------------------------------------------------------

@@ -446,6 +446,49 @@ def test_estimated_cost_populated_when_all_pricing_available(mock_invoke):
 
 
 @patch("app.agent.nodes.holistic_recommender.invoke_structured")
+def test_cache_price_matches_engine_for_shared_instance_type(mock_invoke):
+    mock_invoke.return_value = _full_result(cache_engine=CacheEngine.VALKEY)
+    state = _base_state(cache_candidates=[
+        _cache_candidate("cache.r5.large", CacheEngine.REDIS, price=0.20),
+        _cache_candidate("cache.r5.large", CacheEngine.VALKEY, price=0.15),
+    ])
+
+    cost = recommend_system_design(state)["system_design_recommendation"].estimated_cost
+
+    assert cost.cache_monthly == 109.50
+
+
+@patch("app.agent.nodes.holistic_recommender.invoke_structured")
+def test_database_price_matches_the_recommended_engine(mock_invoke):
+    result = _full_result()
+    result.database.engine_suggestion = "MySQL"
+    mock_invoke.return_value = result
+    candidate = _db_candidate("db.t3.medium", price=0.23)
+    candidate.hourly_prices_by_engine = {"PostgreSQL": 0.23, "MySQL": 0.18}
+
+    cost = recommend_system_design(_base_state(database_candidates=[candidate]))[
+        "system_design_recommendation"
+    ].estimated_cost
+
+    assert cost.database_monthly == 131.40
+
+
+@patch("app.agent.nodes.holistic_recommender.invoke_structured")
+def test_required_unsized_tier_leaves_total_unavailable(mock_invoke):
+    result = _full_result()
+    result.database = DatabaseRecommendation(needed=False, why="No catalog data", confidence="low")
+    mock_invoke.return_value = result
+
+    cost = recommend_system_design(_base_state(database_candidates=[]))[
+        "system_design_recommendation"
+    ].estimated_cost
+
+    assert cost.compute_monthly_low == 70.08
+    assert cost.total_monthly_low is None
+    assert cost.total_monthly_high is None
+
+
+@patch("app.agent.nodes.holistic_recommender.invoke_structured")
 def test_estimated_cost_compute_range_with_multiple_instances(mock_invoke):
     """min=2, max=6 → compute cost spans a range."""
     mock_invoke.return_value = _full_result()

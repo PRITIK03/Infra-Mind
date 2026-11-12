@@ -42,10 +42,14 @@ resource "aws_db_instance" "app" {{
   engine = "{db_engine}"
   instance_class = "{db_instance}"
   allocated_storage = 20
+  storage_encrypted = true
   db_name = "appdb"
   username = var.db_username
-  password = var.db_password
-  skip_final_snapshot = true
+  manage_master_user_password = true
+  backup_retention_period = 7
+  deletion_protection = true
+  skip_final_snapshot = false
+  final_snapshot_identifier = "${{var.app_name}}-db-final"
   vpc_security_group_ids = [aws_security_group.db.id]
   publicly_accessible = false
 }}

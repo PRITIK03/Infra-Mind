@@ -81,6 +81,13 @@ test.describe("seeded results view", () => {
     await expect(page.getByText("db.t3.medium")).toHaveCount(0);
   });
 
+  test("generates a PNG preview for a shared recommendation", async ({ request }) => {
+    const response = await request.get(`/share/${FULL_STACK}/opengraph-image`);
+
+    expect(response.ok()).toBe(true);
+    expect(response.headers()["content-type"]).toContain("image/png");
+  });
+
   test("compute-only job still renders compute guidance", async ({ page }) => {
     await page.goto(`/share/${COMPUTE_ONLY}`, { waitUntil: "domcontentloaded" });
     await expect(

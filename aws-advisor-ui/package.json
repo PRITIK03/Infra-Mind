@@ -12,7 +12,7 @@
   "dependencies": {
     "cmdk": "^1.1.1",
     "jszip": "^3.10.1",
-    "next": "^16.3.4",
+    "next": "16.4.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-syntax-highlighter": "^16.1.1"
@@ -29,7 +29,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "autoprefixer": "^10.4.21",
     "eslint": "^9.0.0",
-    "eslint-config-next": "^16.3.4",
+    "eslint-config-next": "16.4.6",
     "jsdom": "^29.1.1",
     "postcss": "^8.5.3",
     "puppeteer": "^25.10.0",

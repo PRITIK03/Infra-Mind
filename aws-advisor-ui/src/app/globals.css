@@ -234,6 +234,15 @@ details > summary::-webkit-details-marker {
     animation: none !important;
   }
 
+  #deployment {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  #deployment details {
+    break-inside: avoid;
+  }
+
   /* Ensure the summary strip always shows at the top of the first page */
   .print-summary-strip {
     page-break-after: avoid;

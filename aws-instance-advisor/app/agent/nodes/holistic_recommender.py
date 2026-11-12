@@ -322,15 +322,19 @@ def _validate_compute(
 def _validate_database(
     result: SystemDesignRecommendation,
     allowed: set[str],
+    target_engine: str | None = None,
 ) -> list[str]:
     bad: list[str] = []
     db = result.database
-    if not db.needed:
-        return bad
+    if not db.needed or not db.recommended_instance:
+        return ["<missing required database recommendation>"]
     if db.recommended_instance is not None and db.recommended_instance not in allowed:
         bad.append(db.recommended_instance)
     if db.alternative_instance is not None and db.alternative_instance not in allowed:
         bad.append(db.alternative_instance)
+    engine = (target_engine or db.engine_suggestion or "").strip().lower() or "postgresql"
+    if engine not in {"postgresql", "postgres", "mysql", "mariadb"}:
+        bad.append(f"<unsupported RDS engine: {engine}>")
     return bad
 
 
@@ -338,9 +342,13 @@ def _validate_cache(
     result: SystemDesignRecommendation,
     pairs: set[tuple],
 ) -> list[str]:
-    if not result.cache.needed:
-        return []
-    return invalid_cache_pairs(result.cache, pairs)
+    cache = result.cache
+    if not cache.needed or not cache.recommended_instance or not cache.engine:
+        return ["<missing required cache instance and engine>"]
+    bad = invalid_cache_pairs(cache, pairs)
+    if bool(cache.alternative_instance) != bool(cache.alternative_engine):
+        bad.append("<incomplete alternative cache instance and engine>")
+    return bad
 
 
 # ── Retry correction prompts ──────────────────────────────────────────────
@@ -370,7 +378,8 @@ def _database_correction(
         f"is not in the live RDS candidate set. You MUST set "
         f"database.recommended_instance to one value from this exact list, and "
         f"database.alternative_instance to a DIFFERENT value from the same list "
-        f"(or null if no second option makes sense): {allowed_joined}."
+        f"(or null if no second option makes sense): {allowed_joined}. "
+        "Use PostgreSQL, MySQL or MariaDB and preserve an explicit database target."
     )
 
 
@@ -389,17 +398,16 @@ def _cache_correction(
 
 # ── Main node ─────────────────────────────────────────────────────────────
 
-def _build_prompt(
-    state: AgentState,
-    needs_db: bool,
-    needs_cache: bool,
-    compute_text: str,
-    db_text: str | None,
-    cache_text: str | None,
-    lb_needed: bool,
-) -> str:
+def _build_prompt(state: AgentState) -> str:
     requirements = state["requirements"]
     needs = state["technical_needs"]
+    db_candidates = state.get("database_candidates") or []
+    cache_candidates = state.get("cache_candidates") or []
+    needs_db = needs.needs_database and bool(db_candidates)
+    needs_cache = needs.needs_cache and bool(cache_candidates)
+    db_text = _format_database(db_candidates) if needs_db else None
+    cache_text = _format_cache(cache_candidates) if needs_cache else None
+    lb_needed = needs.load_balancer_needed
 
     database_section = (
         _DB_CANDIDATES_SECTION.format(db_candidates=db_text)
@@ -418,7 +426,7 @@ def _build_prompt(
     prompt = _PROMPT_TEMPLATE.format(
         requirements=requirements.model_dump_json(indent=2),
         technical_needs=needs.model_dump_json(indent=2),
-        compute_candidates=compute_text,
+        compute_candidates=_format_compute(state.get("instance_candidates") or []),
         database_section=database_section,
         cache_section=cache_section,
         database_rule=db_rule,
@@ -443,13 +451,15 @@ def build_system_design_recommendation(
     state: AgentState,
     *,
     model_override: str | None = None,
+    corrections: list[str] | None = None,
 ) -> SystemDesignRecommendation:
     """Run the full holistic recommendation pipeline and return the result.
 
     This is the complete holistic-recommend step without graph mutation, so
     consensus mode can reuse the exact same inputs and validations against a
     second model while leaving the primary recommendation in the graph state
-    untouched.
+    untouched. Grounding repair supplies corrections and gets exactly one
+    synthesis attempt, with the same validation and deterministic enrichment.
     """
     needs: TechnicalNeeds | None = state["technical_needs"]
     requirements = state["requirements"]
@@ -474,16 +484,14 @@ def build_system_design_recommendation(
     db_allowed = {c.instance_type for c in db_candidates} if needs_db else set()
     db_allowed_list = [c.instance_type for c in db_candidates] if needs_db else []
     cache_pairs = allowed_cache_pairs(cache_candidates) if needs_cache else set()
+    target_rds_engine = state.get("target_rds_engine")
 
-    # Format candidate texts.
-    compute_text = _format_compute(compute_candidates)
-    db_text = _format_database(db_candidates) if needs_db else None
-    cache_text = _format_cache(cache_candidates) if needs_cache else None
-
-    prompt = _build_prompt(
-        state, needs_db, needs_cache,
-        compute_text, db_text, cache_text, lb_needed,
-    )
+    prompt = _build_prompt(state)
+    if corrections is not None:
+        prompt += (
+            "\n\nCRITICAL CORRECTIONS REQUIRED — resolve these contradictions:\n"
+            + "\n".join(f"  - {issue}" for issue in corrections)
+        )
 
     # ── LLM call ──────────────────────────────────────────────────────────
     try:
@@ -495,10 +503,10 @@ def build_system_design_recommendation(
 
     # ── Validate all three tiers; retry once if any are invalid ───────────
     bad_compute = _validate_compute(result, compute_allowed)
-    bad_db = _validate_database(result, db_allowed) if needs_db else []
+    bad_db = _validate_database(result, db_allowed, target_rds_engine) if needs_db else []
     bad_cache = _validate_cache(result, cache_pairs) if needs_cache else []
 
-    if bad_compute or bad_db or bad_cache:
+    if (bad_compute or bad_db or bad_cache) and corrections is None:
         # Build a single correction prompt addressing all violations at once.
         retry_prompt = prompt
         if bad_compute:
@@ -517,24 +525,30 @@ def build_system_design_recommendation(
 
         # Final check — one retry only.
         bad_compute = _validate_compute(result, compute_allowed)
-        bad_db = _validate_database(result, db_allowed) if needs_db else []
+        bad_db = _validate_database(result, db_allowed, target_rds_engine) if needs_db else []
         bad_cache = _validate_cache(result, cache_pairs) if needs_cache else []
 
-        if bad_compute:
-            raise HolisticRecommendationError(
-                f"Model recommended compute {bad_compute[0]!r}, "
-                "which is not in the live EC2 candidate set."
-            )
-        if bad_db:
-            raise HolisticRecommendationError(
-                f"Model recommended database {bad_db[0]!r}, "
-                "which is not in the live RDS candidate set."
-            )
-        if bad_cache:
-            raise HolisticRecommendationError(
-                f"Model recommended cache {bad_cache[0]}, "
-                "which is not a valid (instance_type, engine) pair."
-            )
+    if bad_compute:
+        raise HolisticRecommendationError(
+            f"Model recommended compute {bad_compute[0]!r}, "
+            "which is not in the live EC2 candidate set."
+        )
+    if bad_db:
+        raise HolisticRecommendationError(
+            f"Model recommended database {bad_db[0]!r}, "
+            "which is not in the live RDS candidate set."
+        )
+    if bad_cache:
+        raise HolisticRecommendationError(
+            f"Model recommended cache {bad_cache[0]}, "
+            "which is not a valid (instance_type, engine) pair."
+        )
+
+    # Verification and consensus are pipeline-owned, never model assertions.
+    result = result.model_copy(update={
+        "grounding_passed": None, "grounding_notes": [], "consensus_result": None,
+        "deployment_handoff": None,
+    })
 
     # ── Enforce load-balancer invariant in code (not LLM-derived) ─────────
     # The LLM fills in load_balancer_type and why, but needed must always
@@ -548,7 +562,6 @@ def build_system_design_recommendation(
     # ── Short-circuit skipped tiers ────────────────────────────────────────
     # If the workload doesn't need a tier, replace whatever the LLM said
     # with the canonical needed=False value constructed in code.
-    target_rds_engine = state.get("target_rds_engine")
     if not needs.needs_database:
         database = _skipped_database(needs.reasoning)
         if requirements.database_engine == "external":
@@ -556,19 +569,25 @@ def build_system_design_recommendation(
         elif requirements.database_engine not in (None, "none"):
             database.why = f"Plan persistence for {requirements.database_engine} separately. This plan includes no RDS instance."
         result = result.model_copy(update={"database": database})
-    elif target_rds_engine and db_candidates:
-        database = result.database
-        if not database.needed or not database.recommended_instance:
-            database = DatabaseRecommendation(
-                needed=True, recommended_instance=db_candidates[0].instance_type,
-                why="Candidate from the AWS catalog for the selected database target.",
-                confidence="low",
-            )
+    elif not db_candidates:
+        result = result.model_copy(update={"database": DatabaseRecommendation(
+            needed=False, confidence="low",
+            why="Database required, but no catalog candidates are available. Size this tier before deployment.",
+        )})
+    else:
+        engine = (target_rds_engine or result.database.engine_suggestion or "").strip().lower() or "postgresql"
         result = result.model_copy(update={
-            "database": database.model_copy(update={"engine_suggestion": target_rds_engine}),
+            "database": result.database.model_copy(update={"engine_suggestion": {
+                "postgres": "PostgreSQL", "postgresql": "PostgreSQL", "mysql": "MySQL", "mariadb": "MariaDB",
+            }[engine]}),
         })
     if not needs.needs_cache:
         result = result.model_copy(update={"cache": _skipped_cache(needs.reasoning)})
+    elif not cache_candidates:
+        result = result.model_copy(update={"cache": CacheRecommendation(
+            needed=False, confidence="low",
+            why="Cache required, but no catalog candidates are available. Size this tier before deployment.",
+        )})
 
     # ── Compute estimated monthly cost from live pricing ──────────────────────
     # None when pricing data is unavailable for any needed tier.

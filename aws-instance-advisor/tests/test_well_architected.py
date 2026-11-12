@@ -123,17 +123,18 @@ def test_rule_max_instances_without_lb_fires():
         _sdr(load_balancer=LoadBalancerRecommendation(needed=False, why="none")),
         _needs(min_instances=2, max_instances=4, load_balancer_needed=False),
     )
-    hit = [f for f in findings if "would not distribute" in f.message]
+    hit = [f for f in findings if "confirm how work reaches" in f.message]
     assert len(hit) == 1
     assert hit[0].pillar == "performance_efficiency"
-    assert hit[0].severity == "warning"
+    assert hit[0].severity == "info"
+    assert "queue" in hit[0].message
 
 
 def test_rule_max_instances_without_lb_does_not_fire_when_lb_present():
     findings = build_well_architected_review(
         _sdr(), _needs(min_instances=2, max_instances=4, load_balancer_needed=True)
     )
-    assert not [f for f in findings if "would not distribute" in f.message]
+    assert not [f for f in findings if "confirm how work reaches" in f.message]
 
 
 def test_rule_max_instances_without_lb_does_not_fire_when_single_instance():
@@ -141,7 +142,7 @@ def test_rule_max_instances_without_lb_does_not_fire_when_single_instance():
         _sdr(load_balancer=LoadBalancerRecommendation(needed=False, why="none")),
         _needs(min_instances=1, max_instances=1, load_balancer_needed=False),
     )
-    assert not [f for f in findings if "would not distribute" in f.message]
+    assert not [f for f in findings if "confirm how work reaches" in f.message]
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +239,7 @@ def test_rule_cache_absent_for_read_heavy_fires():
         _sdr(cache=CacheRecommendation(needed=False, why="no cache", confidence="high")),
         _needs(resource_profile=ResourceProfile.MEMORY_BOUND),
     )
-    hit = [f for f in findings if "cache tier could absorb" in f.message]
+    hit = [f for f in findings if "alone does not establish" in f.message]
     assert len(hit) == 1
     assert hit[0].pillar == "cost_optimization"
     assert hit[0].severity == "info"
@@ -248,7 +249,7 @@ def test_rule_cache_absent_for_read_heavy_does_not_fire_when_cache_needed():
     findings = build_well_architected_review(
         _sdr(), _needs(resource_profile=ResourceProfile.MEMORY_BOUND)
     )
-    assert not [f for f in findings if "cache tier could absorb" in f.message]
+    assert not [f for f in findings if "alone does not establish" in f.message]
 
 
 def test_rule_cache_absent_for_read_heavy_does_not_fire_for_other_profiles():
@@ -262,7 +263,7 @@ def test_rule_cache_absent_for_read_heavy_does_not_fire_for_other_profiles():
             _sdr(cache=CacheRecommendation(needed=False, why="no cache", confidence="high")),
             _needs(resource_profile=profile),
         )
-        assert not [f for f in findings if "cache tier could absorb" in f.message], profile
+        assert not [f for f in findings if "alone does not establish" in f.message], profile
 
 
 # ---------------------------------------------------------------------------

@@ -14,12 +14,12 @@ Scenarios covered:
      flagged on the *original* recommendation.
   5. state missing system_design_recommendation → no-op, state unchanged.
   6. Grounding check itself raises StructuredOutputError → treated as
-     soft pass (logged, not crashed).
+     unverified (logged, not crashed).
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,13 +30,16 @@ from app.agent.nodes.grounding_check import (
 )
 from app.llm.structured import StructuredOutputError
 from app.models.schemas import (
+    CacheCandidate,
     CacheEngine,
     CacheRecommendation,
+    DatabaseCandidate,
     DatabaseRecommendation,
     EstimatedCost,
     InstanceCandidate,
     InstanceRecommendation,
     LoadBalancerRecommendation,
+    RepoAnalysis,
     ResourceProfile,
     SystemDesignRecommendation,
     TechnicalNeeds,
@@ -49,6 +52,15 @@ from app.models.schemas import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_invoke():
+    model = MagicMock()
+    with patch("app.agent.nodes.grounding_check.invoke_structured", model), patch(
+        "app.agent.nodes.holistic_recommender.invoke_structured", model
+    ):
+        yield model
+
 
 def _needs(**kw) -> TechnicalNeeds:
     base = dict(
@@ -149,7 +161,6 @@ def _base_state(**overrides) -> dict:
 # 1. Clean recommendation passes straight through
 # ---------------------------------------------------------------------------
 
-@patch("app.agent.nodes.grounding_check.invoke_structured")
 def test_clean_recommendation_passes(mock_invoke):
     """A recommendation with no contradictions → grounding_passed=True, no notes."""
     mock_invoke.return_value = GroundingResult(passed=True, issues=[])
@@ -168,7 +179,6 @@ def test_clean_recommendation_passes(mock_invoke):
 # 2. Contradictory → repair → second check passes
 # ---------------------------------------------------------------------------
 
-@patch("app.agent.nodes.grounding_check.invoke_structured")
 def test_contradiction_triggers_repair_and_second_check_passes(mock_invoke):
     """
     First grounding check fails → repair call produces a fixed SDR →
@@ -211,7 +221,6 @@ def test_contradiction_triggers_repair_and_second_check_passes(mock_invoke):
 # 3. Repair fails second check → honest failure flagged
 # ---------------------------------------------------------------------------
 
-@patch("app.agent.nodes.grounding_check.invoke_structured")
 def test_repair_still_failing_sets_grounding_failed(mock_invoke):
     """
     After repair, second check still fails → grounding_passed=False and
@@ -237,7 +246,6 @@ def test_repair_still_failing_sets_grounding_failed(mock_invoke):
 # 4. Repair LLM call raises → flag original recommendation
 # ---------------------------------------------------------------------------
 
-@patch("app.agent.nodes.grounding_check.invoke_structured")
 def test_repair_llm_failure_flags_original(mock_invoke):
     """
     If the repair LLM call raises StructuredOutputError, the original
@@ -266,7 +274,6 @@ def test_repair_llm_failure_flags_original(mock_invoke):
 # 5. Missing system_design_recommendation → no-op
 # ---------------------------------------------------------------------------
 
-@patch("app.agent.nodes.grounding_check.invoke_structured")
 def test_missing_sdr_is_noop(mock_invoke):
     """When no SDR is present in state, the node passes through silently."""
     state = _base_state(system_design_recommendation=None)
@@ -277,24 +284,24 @@ def test_missing_sdr_is_noop(mock_invoke):
 
 
 # ---------------------------------------------------------------------------
-# 6. Grounding check LLM call itself fails → soft pass (no crash)
+# 6. Grounding check LLM call itself fails → unverified (no crash)
 # ---------------------------------------------------------------------------
 
-@patch("app.agent.nodes.grounding_check.invoke_structured")
-def test_grounding_check_llm_failure_is_soft_pass(mock_invoke):
+def test_grounding_check_llm_failure_is_unverified(mock_invoke):
     """
     If the grounding check's own LLM call raises StructuredOutputError,
-    treat as a soft pass — grounding_passed=True, no crash.
+    preserve an explicit unverified result, with no repair or extra model calls.
     """
     mock_invoke.side_effect = StructuredOutputError("parse error")
 
     state = _base_state(system_design_recommendation=_sdr())
     out = grounding_check(state)
 
-    # Soft pass: no crash, grounding_passed=True
     sdr = out["system_design_recommendation"]
-    assert sdr.grounding_passed is True
-    assert sdr.grounding_notes == []
+    assert sdr.grounding_passed is None
+    assert "unavailable" in sdr.grounding_notes[0].lower()
+    assert any("unavailable" in finding.message for finding in sdr.well_architected_review)
+    assert mock_invoke.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -314,3 +321,117 @@ def test_grounding_result_failed_with_issues():
     )
     assert r.passed is False
     assert len(r.issues) == 1
+
+
+@pytest.mark.parametrize("invalid_tier", ["compute", "database", "cache", "missing_database", "missing_cache", "cache_alternative"])
+def test_invalid_repair_cannot_reach_export(mock_invoke, invalid_tier):
+    from app.agent.nodes.terraform_generator import generate_terraform
+
+    state = _base_state()
+    repair = _sdr()
+    if invalid_tier == "compute":
+        repair.compute.recommended_instance = "m99.impossible"
+    elif "database" in invalid_tier:
+        state["technical_needs"].needs_database = True
+        state["database_candidates"] = [
+            DatabaseCandidate(instance_type="db.t3.medium", family="General", vcpu=2, memory_gib=4),
+        ]
+        if invalid_tier == "database":
+            repair.database = DatabaseRecommendation(
+                needed=True, recommended_instance="db.m99.impossible", why="invented", confidence="high",
+            )
+    else:
+        state["technical_needs"].needs_cache = True
+        state["cache_candidates"] = [
+            CacheCandidate(instance_type="cache.t3.micro", family="Standard", engine=CacheEngine.VALKEY, vcpu=2, memory_gib=0.5),
+        ]
+        if invalid_tier == "cache":
+            repair.cache = CacheRecommendation(
+                needed=True, recommended_instance="cache.t3.micro", engine=CacheEngine.REDIS,
+                why="wrong pair", confidence="high",
+            )
+        elif invalid_tier == "cache_alternative":
+            repair.cache = CacheRecommendation(
+                needed=True, recommended_instance="cache.t3.micro", engine=CacheEngine.VALKEY,
+                alternative_instance="cache.m99.impossible", why="incomplete pair", confidence="high",
+            )
+    original = state["system_design_recommendation"]
+    mock_invoke.side_effect = [GroundingResult(passed=False, issues=["Contradictory summary"]), repair]
+
+    result = grounding_check(state)["system_design_recommendation"]
+
+    assert result.compute == original.compute
+    assert result.database == original.database
+    assert result.cache == original.cache
+    assert result.grounding_passed is False
+    assert "retained" in result.grounding_notes[-1]
+    assert mock_invoke.call_count == 2
+    assert "m99.impossible" not in generate_terraform(state)["terraform_files"]["main.tf"]
+
+
+def test_repair_preserves_database_target_and_rebuilds_derived_fields(mock_invoke):
+    state = _base_state(
+        target_rds_engine="MySQL",
+        repo_analysis=RepoAnalysis(has_dockerfile=True, analysis_note="Containerized API"),
+        repo_analysis_note="Some files were excluded.",
+    )
+    state["system_design_recommendation"].repo_analysis_note = state["repo_analysis_note"]
+    state["requirements"].database_engine = "MySQL"
+    state["technical_needs"].needs_database = True
+    state["database_candidates"] = [DatabaseCandidate(
+        instance_type="db.t3.medium", family="General", vcpu=2, memory_gib=4,
+        hourly_prices_by_engine={"MySQL": 0.017, "PostgreSQL": 0.018},
+    )]
+    repair = _sdr()
+    repair.database = DatabaseRecommendation(
+        needed=True, recommended_instance="db.t3.medium", engine_suggestion="PostgreSQL",
+        why="Model changed the target", confidence="high",
+    )
+    repair.estimated_cost = EstimatedCost(total_monthly_low=0, total_monthly_high=0)
+    repair.grounding_passed = True
+    mock_invoke.side_effect = [
+        GroundingResult(passed=False, issues=["Contradictory summary"]),
+        repair,
+        GroundingResult(passed=False, issues=["Still contradictory"]),
+    ]
+
+    result = grounding_check(state)["system_design_recommendation"]
+
+    assert result.database.engine_suggestion == "MySQL"
+    assert result.estimated_cost.database_monthly == 12.41
+    assert result.estimated_cost.total_monthly_low == 82.49
+    assert result.containerized_alternative.recommended is True
+    assert result.repo_analysis_note == state["repo_analysis_note"]
+    assert any("Still contradictory" in finding.message for finding in result.well_architected_review)
+    assert mock_invoke.call_count == 3
+
+
+def test_repair_keeps_external_database_and_never_adds_rds(mock_invoke):
+    state = _base_state()
+    state["requirements"].database_engine = "external"
+    repair = _sdr()
+    repair.database = DatabaseRecommendation(
+        needed=True, recommended_instance="db.m99.impossible", why="Invented replacement", confidence="high",
+    )
+    mock_invoke.side_effect = [
+        GroundingResult(passed=False, issues=["Contradictory summary"]),
+        repair,
+        GroundingResult(passed=True),
+    ]
+    result = grounding_check(state)["system_design_recommendation"]
+    assert result.database.needed is False
+    assert result.database.recommended_instance is None
+    assert "Keep the existing database" in result.database.why
+
+
+def test_unavailable_second_check_does_not_certify_repair(mock_invoke):
+    mock_invoke.side_effect = [
+        GroundingResult(passed=False, issues=["Contradictory summary"]),
+        _sdr(),
+        StructuredOutputError("auditor timeout"),
+    ]
+    result = grounding_check(_base_state())["system_design_recommendation"]
+    assert result.grounding_passed is None
+    assert "Contradictory summary" in result.grounding_notes
+    assert "unavailable" in result.grounding_notes[-1]
+    assert mock_invoke.call_count == 3

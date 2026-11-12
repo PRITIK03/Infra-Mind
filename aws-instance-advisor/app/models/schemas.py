@@ -140,11 +140,10 @@ class RepoAnalysis(BaseModel):
     """
     Lightweight, deterministic summary of a user-supplied GitHub repository.
 
-    Produced by repo_analyzer from the repository's root listing plus a few
-    manifest files.  This is deliberately a shallow signal — detected
-    language/framework, containerization, and notable dependencies — not a
-    full dependency graph or build analysis.  It informs the system design
-    reasoner but must never override explicitly user-stated requirements.
+    Compact context derived from repository evidence: language/framework,
+    containerization and notable dependencies. The legacy CLI analyzer uses
+    a smaller manifest scan. This is not a full dependency graph or build
+    analysis and must never override explicitly user-stated requirements.
     """
 
     detected_language: Optional[str] = Field(
@@ -153,7 +152,7 @@ class RepoAnalysis(BaseModel):
     )
     has_dockerfile: bool = Field(
         default=False,
-        description="True when the repository root contains a Dockerfile.",
+        description="True when a Dockerfile was detected in the repository.",
     )
     notable_dependencies: list[str] = Field(
         default_factory=list,
@@ -322,9 +321,8 @@ class DatabaseRecommendation(BaseModel):
     engine_suggestion: Optional[str] = Field(
         default=None,
         description=(
-            "Suggested DB engine (e.g. 'PostgreSQL', 'MySQL') — advisory reasoning, "
-            "not validated against a fixed list, since RDS instance types generally "
-            "support multiple engines."
+            "Suggested RDS engine: PostgreSQL, MySQL or MariaDB. The recommendation "
+            "module validates and canonicalizes it and preserves an explicit database target."
         ),
     )
     why: str
@@ -420,6 +418,20 @@ class EstimatedCost(BaseModel):
     )
 
 
+class DeploymentAction(BaseModel):
+    id: str
+    phase: Literal["before_apply", "before_traffic"]
+    title: str
+    detail: str
+
+
+class DeploymentHandoff(BaseModel):
+    """Generated resources and unfinished deployment work, derived without a model."""
+
+    generated_resources: list[str]
+    actions: list[DeploymentAction]
+
+
 class SystemDesignRecommendation(BaseModel):
     """
     The full V2 recommendation: compute + database + cache + load balancing,
@@ -437,6 +449,7 @@ class SystemDesignRecommendation(BaseModel):
             "reduces database load, why this instance count."
         ),
     )
+    deployment_handoff: Optional[DeploymentHandoff] = None
     repo_analysis_note: Optional[str] = Field(
         default=None,
         description=(
@@ -447,12 +460,12 @@ class SystemDesignRecommendation(BaseModel):
     estimated_cost: Optional[EstimatedCost] = Field(
         default=None,
         description=(
-            "Estimated monthly on-demand cost for the recommended architecture. "
-            "None when pricing data is unavailable."
+            "Estimated monthly on-demand instance subtotal for compute, RDS and cache. "
+            "Other AWS charges are excluded; missing required prices leave the subtotal unavailable."
         ),
     )
     # Grounding check results — populated by grounding_check node.
-    # grounding_passed=None means the check has not run yet (pre-grounding).
+    # grounding_passed=None means the check has not run or was unavailable.
     # grounding_passed=False means the check ran and found unresolved issues
     # after one bounded retry — the recommendation is visible but flagged.
     grounding_passed: Optional[bool] = Field(
@@ -460,14 +473,14 @@ class SystemDesignRecommendation(BaseModel):
         description=(
             "True if the grounding/consistency check passed; False if it failed "
             "after a bounded retry (recommendation flagged, not suppressed); "
-            "None if the check has not run yet."
+            "None if the check has not run or was unavailable."
         ),
     )
     grounding_notes: list[str] = Field(
         default_factory=list,
         description=(
             "Issues found by the grounding check that remain unresolved. "
-            "Empty when grounding_passed is True or None."
+            "Includes an explanation when verification was unavailable."
         ),
     )
     consensus_result: Optional["ConsensusResult"] = Field(

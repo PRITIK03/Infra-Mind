@@ -64,7 +64,8 @@ describe("recommendationToMarkdown", () => {
     expect(markdown).toContain("Users -> t3.micro -> db.t3.small");
     expect(markdown).toContain("Stated registered users: 500");
     expect(markdown).toContain("Cache: not needed");
-    expect(markdown).toContain("Total: $38 - $42");
+    expect(markdown).toContain("Instance subtotal: $38 - $42");
+    expect(markdown).toContain("Excludes load balancers");
     expect(markdown).not.toContain("undefined");
   });
 

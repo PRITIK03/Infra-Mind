@@ -76,7 +76,7 @@ function addTier(
 }
 
 function addCost(lines: string[], cost: EstimatedCost, sdr: SystemDesignRecommendation) {
-  lines.push("## Estimated Monthly Cost");
+  lines.push("## Monthly Instance Estimate");
   const compute = costRange(cost.compute_monthly_low, cost.compute_monthly_high);
   addField(lines, "Compute", compute);
   if (sdr.database.needed) {
@@ -89,8 +89,8 @@ function addCost(lines: string[], cost: EstimatedCost, sdr: SystemDesignRecommen
   } else {
     lines.push("- Cache: not needed");
   }
-  addField(lines, "Total", costRange(cost.total_monthly_low, cost.total_monthly_high));
-  lines.push("");
+  addField(lines, "Instance subtotal", costRange(cost.total_monthly_low, cost.total_monthly_high) ?? "pricing unavailable");
+  lines.push("", "us-east-1 on-demand rates × 730 hours. Excludes load balancers, storage, I/O, backups, network, logs, secrets, taxes and support.", "");
 }
 
 export function recommendationToMarkdown({
@@ -99,6 +99,23 @@ export function recommendationToMarkdown({
 }: ReportData): string {
   const lines = ["# AWS Instance Recommendation", ""];
   lines.push("## Architecture Summary", "", sdr.architecture_summary, "");
+
+  if (sdr.grounding_passed != null || sdr.grounding_notes?.length) {
+    lines.push(`Consistency check: ${sdr.grounding_passed ? "passed" : sdr.grounding_passed == null ? "unavailable" : "review required"}`, "");
+    for (const note of sdr.grounding_notes ?? []) lines.push(`- ${note}`);
+    lines.push("");
+  }
+  if (sdr.deployment_handoff) {
+    lines.push("## Deployment Handoff", "", "### Terraform Scaffold", "");
+    for (const resource of sdr.deployment_handoff.generated_resources) lines.push(`- ${resource}`);
+    for (const phase of ["before_apply", "before_traffic"] as const) {
+      const actions = sdr.deployment_handoff.actions.filter((action) => action.phase === phase);
+      if (!actions.length) continue;
+      lines.push("", phase === "before_apply" ? "### Before Applying" : "### Before Serving Traffic", "");
+      for (const action of actions) lines.push(`- **${action.title}.** ${action.detail}`);
+    }
+    lines.push("");
+  }
 
   lines.push("## Topology", "");
   const topology = ["Users"];

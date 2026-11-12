@@ -22,6 +22,7 @@ export function SectionNav({ sdr, technicalNeeds, hasTerraform = false, hasRepos
 
   useEffect(() => {
     const all: Section[] = [
+      { id: "deployment", label: "Deployment", visible: !!sdr.deployment_handoff },
       { id: "cost", label: "Cost", visible: !!sdr.estimated_cost },
       { id: "compute", label: "Compute", visible: true },
       { id: "database", label: "Database", visible: true },
@@ -62,7 +63,7 @@ export function SectionNav({ sdr, technicalNeeds, hasTerraform = false, hasRepos
   const handleClick = (id: string) => {
     const el = document.getElementById(id);
     if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" });
     }
   };
 

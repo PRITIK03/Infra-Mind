@@ -31,6 +31,9 @@ import uvicorn
 from app.api.job_store import Job
 from app.api.main import app
 from app.api.runtime import jobs
+from app.agent.nodes.terraform_generator import generate_terraform
+from app.analysis.well_architected import build_well_architected_review
+from app.models.schemas import SystemDesignRecommendation, TechnicalNeeds, UserRequirements
 
 # Stable ids the E2E suite asserts against (aws-advisor-ui/e2e/smoke.spec.ts).
 FULL_STACK_ID = "seed-e2e-full-stack"
@@ -42,8 +45,8 @@ OG_CHECK_ID = "seed-visual-check-0001"
 def _base_sdr() -> dict:
     return {
         "architecture_summary": (
-            "Two-tier web service behind an ALB: one auto-scaling compute "
-            "tier, one relational database, one Redis cache for hot reads."
+            "API behind an Application Load Balancer, with EC2 compute, PostgreSQL "
+            "storage and Redis for hot reads. Configure a scaling policy before serving traffic."
         ),
         "compute": {
             "recommended_instance": "m5.large",
@@ -67,7 +70,11 @@ def _base_sdr() -> dict:
             "assumptions": [],
             "confidence": "high",
         },
-        "load_balancer": {"needed": False, "why": "Single instance is sufficient."},
+        "load_balancer": {
+            "needed": True, "load_balancer_type": "Application Load Balancer",
+            "why": "Distribute requests across the compute instances.",
+        },
+        "grounding_notes": ["Demonstration fixture; no live model verification."],
         "well_architected_review": [
             {
                 "pillar": "operational_excellence",
@@ -80,35 +87,49 @@ def _base_sdr() -> dict:
                 "message": "Rightsize after two weeks of real traffic data.",
             },
         ],
-        "estimated_cost": {"total_monthly_low": 120.0, "total_monthly_high": 150.0},
+        "estimated_cost": {
+            "compute_monthly_low": 140.16, "compute_monthly_high": 280.32,
+            "database_monthly": 49.64, "cache_monthly": 12.41,
+            "total_monthly_low": 202.21, "total_monthly_high": 342.37,
+        },
     }
 
 
 def _full_stack_result() -> dict:
     # terraform_files and technical_needs are top-level JobResult fields
     # (the same shape the real pipeline produces), not SDR fields.
+    needs = TechnicalNeeds(
+        estimated_concurrency=150, min_instances=2, max_instances=4,
+        resource_profile="balanced", traffic_pattern="steady", requires_gpu=False,
+        scaling_recommendation="Two to four compute instances; validate capacity with load tests.",
+        needs_database=True, needs_cache=True, load_balancer_needed=True,
+        reasoning="Illustrative API workload with relational storage and a read cache.",
+    )
+    requirements = UserRequirements(
+        workload_type="api_service", estimated_concurrent_users=150,
+        traffic_pattern="steady", database_engine="PostgreSQL",
+    )
+    sdr = SystemDesignRecommendation.model_validate(_base_sdr())
+    sdr.well_architected_review = build_well_architected_review(sdr, needs)
+    state = generate_terraform({
+        "system_design_recommendation": sdr,
+        "technical_needs": needs, "requirements": requirements,
+    })
     return {
-        "system_design_recommendation": _base_sdr(),
-        "terraform_files": {
-            "main.tf": (
-                'provider "aws" {\n  region = "us-east-1"\n}\n\n'
-                'resource "aws_instance" "app" {\n  instance_type = "m5.large"\n'
-                '  ami           = "ami-placeholder"\n}\n'
-            ),
-            "outputs.tf": 'output "instance_id" {\n  value = aws_instance.app.id\n}\n',
-        },
-        "technical_needs": {
-            "scaling_recommendation": "Start at 2 instances, scale on CPU > 60%.",
-            "concurrency_expectation": "About 2,000 concurrent users at peak.",
-        },
+        "system_design_recommendation": state["system_design_recommendation"].model_dump(mode="json"),
+        "terraform_files": state["terraform_files"],
+        "technical_needs": needs.model_dump(mode="json"),
+        "user_requirements": requirements.model_dump(mode="json"),
     }
 
 
 def _no_db_result() -> dict:
     sdr = _base_sdr()
+    sdr["architecture_summary"] = "One EC2 instance serves a stateless API without a database or cache."
+    sdr["load_balancer"] = {"needed": False, "why": "Single-instance demonstration."}
     sdr["database"] = {
         "needed": False,
-        "why": "Stateless API — session data lives in the cache tier.",
+        "why": "Stateless API with no persistence requirement.",
         "assumptions": [],
         "confidence": "high",
     }
@@ -118,12 +139,16 @@ def _no_db_result() -> dict:
         "assumptions": [],
         "confidence": "medium",
     }
-    sdr["estimated_cost"] = {"total_monthly_low": 70.0, "total_monthly_high": 85.0}
+    sdr["estimated_cost"] = {
+        "compute_monthly_low": 70.08, "compute_monthly_high": 70.08,
+        "total_monthly_low": 70.08, "total_monthly_high": 70.08,
+    }
     return {"system_design_recommendation": sdr}
 
 
 def _compute_only_result() -> dict:
     sdr = _base_sdr()
+    sdr["architecture_summary"] = "An ALB distributes requests to EC2 instances without a database or cache."
     sdr["database"] = {
         "needed": False,
         "why": "No persistence required.",
@@ -239,9 +264,10 @@ def install_analysis_fixtures() -> None:
         return state
 
     def recommend(state):
-        state["system_design_recommendation"] = SystemDesignRecommendation.model_validate(_base_sdr())
-        state["terraform_files"] = _full_stack_result()["terraform_files"]
-        return state
+        fixture = _full_stack_result()
+        state["system_design_recommendation"] = SystemDesignRecommendation.model_validate(fixture["system_design_recommendation"])
+        state["technical_needs"] = TechnicalNeeds.model_validate(fixture["technical_needs"])
+        return generate_terraform(state)
 
     os.environ["REPOSITORY_ANALYSIS_ENABLED"] = "true"
     os.environ.pop("REPOSITORY_GITHUB_TOKEN", None)

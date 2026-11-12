@@ -104,7 +104,7 @@ def _why(*, cpu_units: int | None, memory_mib: int | None, instance_type: str) -
 
 _TRADE_OFF = (
     "Fargate removes instance management entirely and bills per-second while "
-    "tasks run, and each task scales independently — but you give up control "
+    "tasks run. ECS Service Auto Scaling can adjust task counts; you give up control "
     "over the underlying host, and task startup (image pull plus container "
     "boot) can add latency compared with an always-running EC2 instance."
 )
@@ -148,6 +148,12 @@ def build_containerized_alternative(
     candidate = next(
         (c for c in compute_candidates if c.instance_type == instance_type), None
     )
+    if candidate is None:
+        return ContainerizedAlternative(
+            recommended=False,
+            why="The selected instance has no catalog sizing data, so an equivalent Fargate task cannot be calculated.",
+            trade_off=_TRADE_OFF,
+        )
 
     size = (
         nearest_fargate_task_size(candidate.vcpu, candidate.memory_gib)

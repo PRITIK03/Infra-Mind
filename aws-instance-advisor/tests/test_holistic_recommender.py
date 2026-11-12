@@ -418,6 +418,44 @@ def test_missing_technical_needs_raises(mock_invoke):
     mock_invoke.assert_not_called()
 
 
+@pytest.mark.parametrize("tier", ["database", "cache"])
+@patch("app.agent.nodes.holistic_recommender.invoke_structured")
+def test_required_catalog_tier_cannot_be_omitted(mock_invoke, tier):
+    omitted = _full_result()
+    setattr(omitted, tier, getattr(omitted, tier).model_copy(update={"needed": False}))
+    mock_invoke.return_value = omitted
+    with pytest.raises(HolisticRecommendationError, match="missing required"):
+        recommend_system_design(_base_state())
+    assert mock_invoke.call_count == 2
+
+
+@patch("app.agent.nodes.holistic_recommender.invoke_structured")
+def test_unsupported_database_engine_is_repaired_before_export(mock_invoke):
+    invalid = _full_result()
+    invalid.database.engine_suggestion = "Oracle"
+    mock_invoke.side_effect = [invalid, _full_result()]
+    result = recommend_system_design(_base_state())["system_design_recommendation"]
+    assert result.database.engine_suggestion == "PostgreSQL"
+    assert mock_invoke.call_count == 2
+
+
+@pytest.mark.parametrize("engine", [None, "", "   ", "postgres", "mysql"])
+@patch("app.agent.nodes.holistic_recommender.invoke_structured")
+def test_unspecified_or_alias_engine_has_one_meaning_through_export(mock_invoke, engine):
+    from app.agent.nodes.terraform_generator import generate_terraform
+
+    recommendation = _full_result()
+    recommendation.database.engine_suggestion = engine
+    mock_invoke.return_value = recommendation
+    state = generate_terraform(recommend_system_design(_base_state()))
+    expected = "MySQL" if engine == "mysql" else "PostgreSQL"
+    result = state["system_design_recommendation"]
+    assert result.database.engine_suggestion == expected
+    assert any(f"RDS {expected}" in item for item in result.deployment_handoff.generated_resources)
+    assert f'engine = "{engine if engine == "mysql" else "postgres"}"' in state["terraform_files"]["main.tf"]
+    assert mock_invoke.call_count == 1
+
+
 @patch("app.agent.nodes.holistic_recommender.invoke_structured")
 def test_missing_compute_candidates_raises(mock_invoke):
     state = _base_state(instance_candidates=[])

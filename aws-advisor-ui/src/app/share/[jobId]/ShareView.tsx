@@ -12,10 +12,6 @@ const TerraformViewer = dynamic(
   () => import("@/components/TerraformViewer").then((m) => m.TerraformViewer),
   { ssr: false },
 );
-import { WellArchitectedReview } from "@/components/WellArchitectedReview";
-import { ContainerizedAlternative } from "@/components/ContainerizedAlternative";
-import { CostSection } from "@/components/CostSection";
-import { ConfidenceStrip } from "@/components/ConfidenceStrip";
 import { ResultSummaryStrip } from "@/components/ResultSummaryStrip";
 import { RequestSummary } from "@/components/RequestSummary";
 import { CopyReportButton } from "@/components/CopyReportButton";
@@ -147,40 +143,18 @@ function SharedResult({ job }: { job: JobResponse }) {
       <ResultSummaryStrip sdr={sdr} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2 print:hidden">
-        <CopyReportButton sdr={sdr} technicalNeeds={technicalNeeds} />
+        <CopyReportButton sdr={sdr} technicalNeeds={technicalNeeds} userRequirements={job.result?.user_requirements} />
         <ExportPdfButton />
       </div>
 
-      {sdr.well_architected_review && sdr.well_architected_review.length > 0 && (
-        <div id="well-architected" className="py-6 scroll-mt-16">
-          <WellArchitectedReview findings={sdr.well_architected_review} />
-        </div>
-      )}
-
-      <ConfidenceStrip sdr={sdr} />
-
       <ResultReport sdr={sdr} technicalNeeds={technicalNeeds} />
-
-      {sdr.containerized_alternative?.recommended && (
-        <div id="containerized-alternative" className="py-6 scroll-mt-16">
-          <ContainerizedAlternative alternative={sdr.containerized_alternative} />
-        </div>
-      )}
 
       {sdr.consensus_result && (
         <ConsensusResult consensus={sdr.consensus_result} />
       )}
 
       {technicalNeeds && (
-        <RequestSummary tn={technicalNeeds} repoAnalysisNote={sdr.repo_analysis_note} />
-      )}
-
-      {sdr.estimated_cost && (
-        <CostSection
-          cost={sdr.estimated_cost}
-          databaseNeeded={sdr.database.needed}
-          cacheNeeded={sdr.cache.needed}
-        />
+        <RequestSummary tn={technicalNeeds} requirements={job.result?.user_requirements} repoAnalysisNote={sdr.repo_analysis_note} />
       )}
 
       {tfFiles && Object.keys(tfFiles).length > 0 && (

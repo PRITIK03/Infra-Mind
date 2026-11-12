@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 interface Props {
   /** Label shown before the report title in the PDF header. */
   title?: string;
@@ -12,6 +14,25 @@ interface Props {
  * globals.css — no external library, no bundle-size cost.
  */
 export function ExportPdfButton({ title }: Props = {}) {
+  useEffect(() => {
+    let closed: HTMLDetailsElement[] = [];
+    const expand = () => {
+      closed = Array.from(document.querySelectorAll<HTMLDetailsElement>("main details:not([open])"));
+      closed.forEach((detail) => { detail.open = true; });
+    };
+    const restore = () => {
+      closed.forEach((detail) => { detail.open = false; });
+      closed = [];
+    };
+    window.addEventListener("beforeprint", expand);
+    window.addEventListener("afterprint", restore);
+    return () => {
+      window.removeEventListener("beforeprint", expand);
+      window.removeEventListener("afterprint", restore);
+      restore();
+    };
+  }, []);
+
   const handlePrint = () => {
     if (title && typeof document !== "undefined") {
       const prev = document.title;

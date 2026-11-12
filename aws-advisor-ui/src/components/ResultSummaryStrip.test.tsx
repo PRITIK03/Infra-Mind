@@ -45,7 +45,7 @@ describe("ResultSummaryStrip", () => {
     expect(screen.getByText("compute")).toBeInTheDocument();
     expect(screen.getByText("c6i.xlarge")).toBeInTheDocument();
 
-    expect(screen.getByText("est. monthly cost")).toBeInTheDocument();
+    expect(screen.getByText("instances / month")).toBeInTheDocument();
     expect(screen.getByText("$120–$150/mo")).toBeInTheDocument();
 
     expect(screen.getByText("grounding")).toBeInTheDocument();
@@ -68,7 +68,7 @@ describe("ResultSummaryStrip", () => {
 
     expect(screen.getByText("compute")).toBeInTheDocument();
     expect(screen.getByText("c6i.xlarge")).toBeInTheDocument();
-    expect(screen.queryByText("est. monthly cost")).not.toBeInTheDocument();
+    expect(screen.queryByText("instances / month")).not.toBeInTheDocument();
     expect(screen.queryByText("grounding")).not.toBeInTheDocument();
     expect(screen.queryByText("well-architected")).not.toBeInTheDocument();
   });

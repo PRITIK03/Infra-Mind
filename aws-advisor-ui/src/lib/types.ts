@@ -109,6 +109,7 @@ export interface SystemDesignRecommendation {
   cache: CacheRecommendation;
   load_balancer: LoadBalancerRecommendation;
   architecture_summary: string;
+  deployment_handoff?: DeploymentHandoff | null;
   repo_analysis_note?: string | null;
   estimated_cost?: EstimatedCost | null;
   grounding_passed?: boolean | null;
@@ -129,6 +130,16 @@ export interface SystemDesignRecommendation {
    * requested; present-but-disabled when the backend declined it.
    */
   consensus_result?: ConsensusResult | null;
+}
+
+export interface DeploymentHandoff {
+  generated_resources: string[];
+  actions: {
+    id: string;
+    phase: "before_apply" | "before_traffic";
+    title: string;
+    detail: string;
+  }[];
 }
 
 export interface ContainerizedAlternative {

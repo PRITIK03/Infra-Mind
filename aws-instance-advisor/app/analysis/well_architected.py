@@ -60,16 +60,16 @@ def _rule_no_compute_redundancy(
 def _rule_max_instances_without_load_balancer(
     sdr: SystemDesignRecommendation, tn: TechnicalNeeds
 ) -> WellArchitectedFinding | None:
-    """max_instances > 1 but no load balancer → nothing distributes traffic."""
+    """Multiple instances need a workload-appropriate way to distribute work."""
     if tn.max_instances <= 1 or sdr.load_balancer.needed:
         return None
     return WellArchitectedFinding(
         pillar="performance_efficiency",
-        severity="warning",
+        severity="info",
         message=(
             f"max_instances is {tn.max_instances} but load_balancer.needed is "
-            "False: scaling beyond one instance would not distribute incoming "
-            "traffic across them."
+            "False: confirm how work reaches each instance, such as a queue "
+            "for batch workers or a load balancer for HTTP traffic."
         ),
     )
 
@@ -95,6 +95,11 @@ def _rule_grounding_failed(
     sdr: SystemDesignRecommendation, tn: TechnicalNeeds
 ) -> WellArchitectedFinding | None:
     """grounding_passed is explicitly False → unresolved contradictions."""
+    if sdr.grounding_passed is None and sdr.grounding_notes:
+        return WellArchitectedFinding(
+            pillar="operational_excellence", severity="warning",
+            message="The consistency check is unavailable. Review the recommendation before deployment.",
+        )
     if sdr.grounding_passed is not False:
         return None
     notes = [n for n in (sdr.grounding_notes or []) if n.strip()]
@@ -123,15 +128,14 @@ def _rule_security_groups_are_baseline(
     )
 
 
-def _rule_cache_absent_for_read_heavy_profile(
+def _rule_memory_profile_needs_measurement(
     sdr: SystemDesignRecommendation, tn: TechnicalNeeds
 ) -> WellArchitectedFinding | None:
     """
     Memory-bound profile but no cache tier.
 
-    MEMORY_BOUND is the only read-heavy signal actually tracked: the pipeline
-    records no read/write ratio or query pattern, so the rule keys off that
-    single field rather than guessing from prose.
+    The profile records memory pressure, not a read/write ratio or query
+    pattern. Recommend measuring cache benefit rather than assuming it.
     """
     if sdr.cache.needed or tn.resource_profile != ResourceProfile.MEMORY_BOUND:
         return None
@@ -140,8 +144,8 @@ def _rule_cache_absent_for_read_heavy_profile(
         severity="info",
         message=(
             "resource_profile is memory_bound but cache.needed is False: a "
-            "cache tier could absorb repeated reads and reduce the instance "
-            "size the workload needs."
+            "memory-bound profile alone does not establish a benefit from caching. "
+            "Measure repeated reads and cache hit potential before adding a cache."
         ),
     )
 
@@ -187,7 +191,7 @@ _RULES = (
     _rule_single_instance_no_load_balancer,
     _rule_grounding_failed,
     _rule_security_groups_are_baseline,
-    _rule_cache_absent_for_read_heavy_profile,
+    _rule_memory_profile_needs_measurement,
     _rule_cost_not_estimated,
     _rule_repo_context_unavailable,
 )

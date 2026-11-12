@@ -5,6 +5,8 @@
 
 InfraMind sizes AWS infrastructure from workload details, a public GitHub repository, or both. It recommends compute, database, and cache resources using live catalog data and exports a Terraform starting point.
 
+Each new result includes a deployment handoff listing the generated resources and remaining work before applying infrastructure or serving traffic. It is useful for an initial architecture review and an engineering handoff. It does not deploy the application or certify its capacity or security. See [demo and release requirements](docs/DEPLOYMENT_READINESS.md).
+
 This repository is a monorepo with two projects:
 
 ```
@@ -247,6 +249,10 @@ docker run -p 8000:8000 --env-file .env infra-mind
 ---
 
 ## Using the Terraform export
+
+The result's **Deployment handoff** is derived from the same completed recommendation as the export. It covers application startup, network and identity configuration, full-cost budgeting, data migration and recovery, monitoring, and workload-specific decisions for batch jobs, model serving and external databases. The web ZIP includes these steps in `DEPLOYMENT.md`; Markdown and PDF exports include them too. Repository share links remain a restricted resource-and-cost summary.
+
+Terraform is the available export format. CloudFormation generation and ECS/Fargate provisioning are not implemented; the Fargate section is sizing advice only.
 
 The export assumes the account's default VPC, default subnets, and a stock Amazon Linux 2023 image. Configure your private subnets, application bootstrap, TLS, IAM, scaling policies, and monitoring for the target workload. The RDS template uses Secrets Manager for its master credential, encrypted storage, seven days of automated backups, and deletion protection. Grant the application a separate least-privilege database user.
 

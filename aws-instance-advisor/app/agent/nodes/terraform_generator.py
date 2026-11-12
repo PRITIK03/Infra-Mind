@@ -42,6 +42,7 @@ from app.agent.nodes.terraform.security_groups import (
     _sg_lb,
 )
 from app.agent.state import AgentState
+from app.analysis.deployment_handoff import build_deployment_handoff
 from app.models.schemas import (
     CacheEngine,
     SystemDesignRecommendation,
@@ -189,4 +190,7 @@ def generate_terraform(state: AgentState) -> AgentState:
         "variables.tf": variables_tf,
         "outputs.tf": _build_outputs(sdr),
     }
+    state["system_design_recommendation"] = sdr.model_copy(update={
+        "deployment_handoff": build_deployment_handoff(state),
+    })
     return state

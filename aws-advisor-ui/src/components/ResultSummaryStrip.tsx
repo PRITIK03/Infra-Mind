@@ -55,7 +55,7 @@ export function ResultSummaryStrip({ sdr }: Props) {
     sdr.grounding_passed == null ? 0.15 : sdr.grounding_passed ? 1.0 : 0.35;
   const groundingLabel =
     sdr.grounding_passed == null
-      ? "not checked"
+      ? "unverified"
       : sdr.grounding_passed
         ? "verified"
         : "review";
@@ -78,14 +78,14 @@ export function ResultSummaryStrip({ sdr }: Props) {
       {costStr && (
         <>
           <span className="hidden sm:block self-stretch border-l border-border-subtle" aria-hidden />
-          <Cell label="est. monthly cost">
+          <Cell label="instances / month">
             {costStr}
           </Cell>
         </>
       )}
 
       {/* Grounding */}
-      {sdr.grounding_passed != null && (
+      {(sdr.grounding_passed != null || !!sdr.grounding_notes?.length) && (
         <>
           <span className="hidden sm:block self-stretch border-l border-border-subtle" aria-hidden />
           <Cell label="grounding">

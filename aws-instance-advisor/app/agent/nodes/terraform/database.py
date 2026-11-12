@@ -22,7 +22,7 @@ RDS_ENGINE_PORT_MAP: dict[str, int] = {
 
 
 def _rds_engine(engine_suggestion: str | None) -> str:
-    if engine_suggestion is None:
+    if not engine_suggestion or not engine_suggestion.strip():
         # Fallback: postgres is the safe default.
         return "postgres"
     if engine_suggestion in RDS_ENGINE_MAP:
@@ -31,8 +31,7 @@ def _rds_engine(engine_suggestion: str | None) -> str:
     for key, val in RDS_ENGINE_MAP.items():
         if key.lower() == lowered:
             return val
-    # Fallback rather than crashing
-    return "postgres"
+    raise ValueError(f"Unsupported RDS engine {engine_suggestion!r}; choose PostgreSQL, MySQL or MariaDB.")
 
 
 def _rds_instance(*, db_engine: str, db_instance: str) -> str:

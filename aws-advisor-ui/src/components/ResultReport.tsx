@@ -11,6 +11,7 @@ import { ConfidenceStrip } from "./ConfidenceStrip";
 import { CopyableValue } from "./CopyableValue";
 import { WellArchitectedReview } from "./WellArchitectedReview";
 import { ContainerizedAlternative } from "./ContainerizedAlternative";
+import { DeploymentHandoff } from "./DeploymentHandoff";
 
 interface Props {
   sdr: SystemDesignRecommendation;
@@ -310,7 +311,7 @@ export function ResultReport({ sdr, technicalNeeds, instanceCandidates }: Props)
           <span className="flex-1 border-t border-amber/20" />
         </div>
 
-        {sdr.grounding_passed != null && (
+        {(sdr.grounding_passed != null || !!sdr.grounding_notes?.length) && (
           <div className="mb-4">
             <div className="inline-flex items-center gap-2 border border-border-subtle px-3 py-2">
               <span
@@ -323,11 +324,11 @@ export function ResultReport({ sdr, technicalNeeds, instanceCandidates }: Props)
                 aria-label={
                   sdr.grounding_passed
                     ? "grounding verified consistent"
-                    : "grounding review recommended"
+                    : sdr.grounding_passed == null ? "consistency check unavailable" : "grounding review recommended"
                 }
               />
               <span className="font-mono text-xs text-ink">
-                {sdr.grounding_passed ? "Verified consistent" : "Review recommended"}
+                {sdr.grounding_passed ? "Verified consistent" : sdr.grounding_passed == null ? "Consistency check unavailable" : "Review recommended"}
               </span>
             </div>
             {!sdr.grounding_passed && sdr.grounding_notes && sdr.grounding_notes.length > 0 && (
@@ -357,6 +358,16 @@ export function ResultReport({ sdr, technicalNeeds, instanceCandidates }: Props)
       </section>
 
       <hr className="console-rule" />
+
+      {sdr.deployment_handoff && (
+        <>
+          <section id="deployment" aria-label="Deployment handoff" className="result-section py-6 scroll-mt-16">
+            <SectionHeader label="deployment handoff" />
+            <DeploymentHandoff handoff={sdr.deployment_handoff} />
+          </section>
+          <hr className="console-rule" />
+        </>
+      )}
 
       {/* ── Confidence strip — all needed tiers at a glance ── */}
       <section className="result-section result-section-delay-2 py-6">
@@ -389,7 +400,7 @@ export function ResultReport({ sdr, technicalNeeds, instanceCandidates }: Props)
         <section className="result-section result-section-delay-3 py-6 scroll-mt-16" id="cost">
           <div className="flex items-center gap-2 mb-4">
             <span className="font-mono text-xs text-amber uppercase tracking-widest">
-              estimated monthly cost
+              monthly instance estimate
             </span>
             <span className="flex-1 border-t border-amber/20 w-8" />
           </div>

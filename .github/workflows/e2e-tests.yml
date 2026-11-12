@@ -33,7 +33,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: aws-advisor-ui/package-lock.json
 
@@ -42,18 +42,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install frontend dependencies
-        # Mirror the vitest-and-build job: npm ci with optional deps, plus the
-        # rolldown native-binding repair (see that workflow for the full
-        # root-cause write-up).
         working-directory: aws-advisor-ui
-        run: |
-          set -euo pipefail
-          npm ci --include=optional
-          LOCKED=$(node -p "require('./package-lock.json').packages['node_modules/rolldown'].version")
-          if ! node -e "require.resolve('@rolldown/binding-linux-x64-gnu')" 2>/dev/null; then
-            npm install --no-save --no-audit --no-fund "@rolldown/binding-linux-x64-gnu@$LOCKED"
-          fi
-          node -e "require.resolve('@rolldown/binding-linux-x64-gnu')"
+        run: npm ci --include=optional
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
 
       - name: Install Playwright browsers
         working-directory: aws-advisor-ui

@@ -515,6 +515,7 @@ export default function Home() {
           onViewRawJson={showResult && tfFiles ? () => window.dispatchEvent(new Event("view-raw-json")) : undefined}
           onGoToHistory={() => router.push("/history")}
           resultSections={showResult ? [
+            ...(sdr?.deployment_handoff ? [{ id: "deployment", label: "Deployment" }] : []),
             ...(sdr?.estimated_cost ? [{ id: "cost", label: "Cost" }] : []),
             { id: "compute", label: "Compute" },
             { id: "database", label: "Database" },

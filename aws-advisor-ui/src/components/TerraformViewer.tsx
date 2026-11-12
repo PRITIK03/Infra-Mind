@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import type { SystemDesignRecommendation } from "@/lib/types";
+import { recommendationToMarkdown } from "@/lib/reportMarkdown";
 
 // A minimal dark theme matching the console palette — no colors except
 // amber for keywords, off-white for text, muted for comments.
@@ -90,6 +91,9 @@ export function TerraformViewer({ files, recommendation }: Props) {
       const folder = zip.folder("terraform");
       for (const [name, content] of Object.entries(files)) {
         folder?.file(name, content);
+      }
+      if (recommendation?.deployment_handoff) {
+        folder?.file("DEPLOYMENT.md", recommendationToMarkdown({ sdr: recommendation }));
       }
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);

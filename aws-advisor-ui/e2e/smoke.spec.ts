@@ -63,7 +63,15 @@ test.describe("seeded results view", () => {
     // Summary strip + report body render the seeded compute instance.
     await expect(page.getByText("m5.large").first()).toBeVisible();
     // Cost section from the seeded estimate.
-    await expect(page.getByText(/\$12[05]/).first()).toBeVisible();
+    await expect(page.getByText("instances / month")).toBeVisible();
+    await expect(page.getByText(/NaN|undefined/)).toHaveCount(0);
+    await expect(page.getByTestId("well-architected-review")).toHaveCount(1);
+    const handoff = page.getByRole("region", { name: "Deployment handoff" });
+    await expect(handoff).toBeVisible();
+    const review = handoff.locator("summary").filter({ hasText: "Review the infrastructure scaffold" });
+    await review.focus();
+    await page.keyboard.press("Enter");
+    await expect(handoff.getByText(/CloudFormation export is not available/)).toBeVisible();
     // Well-Architected review section is present.
     await expect(
       page.getByText(/well.architected/i).first(),

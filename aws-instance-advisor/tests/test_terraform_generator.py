@@ -435,10 +435,7 @@ def test_terraform_rejects_instance_types_that_can_break_hcl_strings():
         generate_terraform(_state_with(sdr, tn))
 
 
-def test_rds_engine_fallback_for_unknown():
-    """
-    Unknown engine_suggestion falls back to postgres rather than crashing.
-    """
+def test_unknown_rds_engine_never_silently_becomes_postgres():
     sdr, tn = _scenario3()
     sdr = sdr.model_copy(
         update={
@@ -447,9 +444,8 @@ def test_rds_engine_fallback_for_unknown():
             )
         }
     )
-    out = generate_terraform(_state_with(sdr, tn))
-    main = out["terraform_files"]["main.tf"]
-    assert 'engine = "postgres"' in main  # safe fallback
+    with pytest.raises(ValueError, match="Unsupported RDS engine"):
+        generate_terraform(_state_with(sdr, tn))
 
 
 def test_missing_state_raises():

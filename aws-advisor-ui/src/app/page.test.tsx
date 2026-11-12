@@ -151,11 +151,11 @@ describe("Landing page consensus toggle", () => {
     const user = userEvent.setup();
     render(<Home />);
     const textarea = screen.getByRole("textbox", {
-      name: /describe your application and workload/i,
+      name: /workload details/i,
     });
     await user.type(textarea, "High traffic gaming backend");
 
-    const submitBtn = screen.getByRole("button", { name: /run →/i });
+    const submitBtn = screen.getByRole("button", { name: /run analysis/i });
     await user.click(submitBtn);
 
     expect(mockSubmit).toHaveBeenCalledWith("High traffic gaming backend", false);
@@ -165,7 +165,7 @@ describe("Landing page consensus toggle", () => {
     const user = userEvent.setup();
     render(<Home />);
     const textarea = screen.getByRole("textbox", {
-      name: /describe your application and workload/i,
+      name: /workload details/i,
     });
     await user.type(textarea, "High traffic gaming backend");
 
@@ -175,7 +175,7 @@ describe("Landing page consensus toggle", () => {
     await user.click(checkbox);
     expect(checkbox).toBeChecked();
 
-    const submitBtn = screen.getByRole("button", { name: /run →/i });
+    const submitBtn = screen.getByRole("button", { name: /run analysis/i });
     await user.click(submitBtn);
 
     expect(mockSubmit).toHaveBeenCalledWith("High traffic gaming backend", true);

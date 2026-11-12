@@ -24,7 +24,8 @@ export interface UseJobPollerReturn {
   retryInfo: string | null;
   isWakingUp: boolean;
   isActive: boolean;
-  submit: (message: string, consensus?: boolean) => Promise<void>;
+  inputError?: "github_url" | null;
+  submit: (message: string, consensus?: boolean, githubUrl?: string) => Promise<void>;
   answer: (reply: string) => Promise<void>;
   reset: () => void;
   totalElapsedMs: number | null;
@@ -42,6 +43,10 @@ export function useJobPoller(): UseJobPollerReturn {
   const [isWakingUp, setIsWakingUp] = useState(false);
   const [totalElapsedMs, setTotalElapsedMs] = useState<number | null>(null);
   const [retryCount, setRetryCount] = useState<number | null>(null);
+  const [inputError, setInputError] = useState<"github_url" | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const startRequestRef = useRef<number | null>(null);
+  const nextRequestRef = useRef(0);
 
   // Track whether we should keep polling (the polling fallback path)
   const pollingRef = useRef(false);
@@ -228,6 +233,7 @@ export function useJobPoller(): UseJobPollerReturn {
         } catch (err) {
           if (pollingSessionRef.current !== session) return;
           setError(err instanceof Error ? err.message : "Polling failed");
+          setStatus("error");
           stopPolling();
         } finally {
           if (pollInFlightSessionRef.current === session) {
@@ -241,6 +247,7 @@ export function useJobPoller(): UseJobPollerReturn {
 
   // Clean up on unmount
   useEffect(() => () => {
+    startRequestRef.current = null;
     stopPolling();
     clearWakeTimer();
   }, [clearWakeTimer, stopPolling]);
@@ -279,10 +286,14 @@ export function useJobPoller(): UseJobPollerReturn {
   }, []);
 
   const submit = useCallback(
-    async (message: string, consensus?: boolean) => {
+    async (message: string, consensus?: boolean, githubUrl?: string) => {
+      if (startRequestRef.current !== null) return;
+      const request = ++nextRequestRef.current;
+      startRequestRef.current = request;
+      setIsStarting(true);
+      stopPolling();
       clearWakeTimer();
       wakeTimerRef.current = setTimeout(() => setIsWakingUp(true), WAKE_THRESHOLD_MS);
-      stopPolling();
       setJobId(null);
       setJobResponse(null);
       setStatus(null);
@@ -290,21 +301,35 @@ export function useJobPoller(): UseJobPollerReturn {
       setNextQuestion(null);
       setRetryInfo(null);
       setError(null);
+      setInputError(null);
       setTotalElapsedMs(null);
       setRetryCount(null);
       startTimeRef.current = Date.now();
       lastRetryInfoRef.current = null;
 
       try {
-        const { job_id } = await createJob(message, consensus);
+        const { job_id } = githubUrl
+          ? await createJob(message, consensus, githubUrl)
+          : await createJob(message, consensus);
+        if (startRequestRef.current !== request) return;
         clearWakeTimer();
         setJobId(job_id);
         setStatus("collecting");
         startPolling(job_id);
       } catch (err) {
+        if (startRequestRef.current !== request) return;
         clearWakeTimer();
+        setIsWakingUp(false);
+        if (err instanceof Error && "field" in err && err.field === "github_url") {
+          setInputError("github_url");
+        }
         setError(err instanceof Error ? err.message : "Failed to start job");
         setStatus("error");
+      } finally {
+        if (startRequestRef.current === request) {
+          startRequestRef.current = null;
+          setIsStarting(false);
+        }
       }
     },
     [clearWakeTimer, stopPolling, startPolling]
@@ -329,7 +354,10 @@ export function useJobPoller(): UseJobPollerReturn {
   );
 
   const reset = useCallback(() => {
+    startRequestRef.current = null;
     stopPolling();
+    setIsStarting(false);
+    setInputError(null);
     setIsWakingUp(false);
     setJobId(null);
     setJobResponse(null);
@@ -345,7 +373,7 @@ export function useJobPoller(): UseJobPollerReturn {
   }, [stopPolling]);
 
   const isActive =
-    status === "collecting" || status === "running";
+    isStarting || status === "collecting" || status === "running";
 
   return {
     status,
@@ -356,6 +384,7 @@ export function useJobPoller(): UseJobPollerReturn {
     retryInfo,
     isWakingUp,
     isActive,
+    inputError,
     submit,
     answer,
     reset,

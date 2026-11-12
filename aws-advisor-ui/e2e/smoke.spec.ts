@@ -44,7 +44,7 @@ test.describe("landing page", () => {
 
     // Clicking an example fills the composer textarea (landing → input works).
     await chip.click();
-    const composer = page.getByRole("textbox");
+    const composer = page.getByRole("textbox", { name: "Workload details" });
     await expect(composer).toHaveValue(/flash-sale/i);
   });
 });
@@ -87,6 +87,79 @@ test.describe("seeded results view", () => {
       page.getByText("Viewing a shared recommendation"),
     ).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("m5.large").first()).toBeVisible();
+  });
+});
+
+test.describe("repository analysis", () => {
+  test("runs from a repository alone and creates a separate share link", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("textbox", { name: "GitHub repository" }).fill("https://github.com/inframind-demo/public-service");
+    await page.getByRole("button", { name: "Run analysis" }).click();
+    const report = page.getByRole("region", { name: "Repository analysis" });
+    await expect(report.getByText(/3 of 3 tracked files read/)).toBeVisible();
+    await expect(report.getByRole("heading", { name: "Provisional sizing", exact: true })).toBeVisible();
+    await report.locator("summary").filter({ hasText: "Database" }).click();
+    const evidence = report.getByRole("link", { name: /migrations\/001\.sql:1$/ }).first();
+    await expect(evidence).toHaveAttribute("href", /\/blob\/[a-f0-9]{40}\/services\/api\/db\/migrations\/001\.sql#L1$/);
+    const pendingShare = page.waitForResponse((response) =>
+      response.request().method() === "POST" && /\/api\/recommend\/[^/]+\/share$/.test(response.url()));
+    await page.getByRole("button", { name: "Copy share link" }).click();
+    const shared = await pendingShare;
+    expect(shared.ok()).toBe(true);
+    const { share_id } = await shared.json();
+    expect(shared.url()).not.toContain(share_id);
+    await page.goto(`/share/${share_id}`);
+    await expect(page.getByText("Viewing a shared recommendation")).toBeVisible();
+    await expect(page.getByText("m5.large").first()).toBeVisible();
+    await expect(page.getByText(/public-service|001\.sql/)).toHaveCount(0);
+  });
+
+  test("shows partial coverage when progress falls back to polling", async ({ page }) => {
+    await page.route("**/api/recommend/*/stream", (route) => route.abort());
+    await page.goto("/");
+    await page.getByRole("textbox", { name: "GitHub repository" }).fill("https://github.com/inframind-demo/partial-service");
+    await page.getByRole("textbox", { name: "Workload details" }).fill("Peak traffic is 25 RPS.");
+    await page.getByRole("button", { name: "Run analysis" }).click();
+    const report = page.getByRole("region", { name: "Repository analysis" });
+    await expect(report.getByText(/Partial scan.*3 of 4/)).toBeVisible({ timeout: 15_000 });
+    await expect(report.getByText(/Unreadable files/)).toBeVisible();
+  });
+
+  test("returns an inaccessible repo to the form and continues with added workload details", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/");
+    const repository = page.getByRole("textbox", { name: "GitHub repository" });
+    const link = "https://github.com/inframind-demo/inaccessible";
+    await repository.fill(link);
+    await page.getByRole("button", { name: "Run analysis" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "It may be private" })).toBeVisible();
+    await expect(repository).toHaveValue(link);
+    await expect(repository).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+    await page.getByRole("textbox", { name: "Workload details" }).fill("A steady API with 25 peak RPS.");
+    await page.getByRole("button", { name: "Run analysis" }).click();
+    await expect(page.getByRole("region", { name: "Repository analysis" })).toContainText("based on your workload details only");
+  });
+
+  test("keeps the workload-only path available", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("textbox", { name: "Workload details" }).fill("A steady API with 25 peak RPS.");
+    await page.getByRole("button", { name: "Run analysis" }).click();
+    await expect(page.getByRole("heading", { name: "Recommendation", exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Repository analysis" })).toHaveCount(0);
+  });
+
+  test("puts an invalid GitHub URL error beside its field and retains the workload", async ({ page }) => {
+    await page.goto("/");
+    const repository = page.getByRole("textbox", { name: "GitHub repository" });
+    const workload = page.getByRole("textbox", { name: "Workload details" });
+    await repository.fill("https://example.org/not-github");
+    await workload.fill("A steady API with 25 peak RPS.");
+    await page.getByRole("button", { name: "Run analysis" }).click();
+    await expect(repository).toHaveAttribute("aria-invalid", "true");
+    await expect(repository).toBeFocused();
+    await expect(workload).toHaveValue("A steady API with 25 peak RPS.");
+    await expect(page.getByRole("alert").filter({ hasText: "Enter a GitHub repository URL" })).toBeVisible();
   });
 });
 

@@ -23,6 +23,8 @@ flowchart TD
         RateLimiter[InMemoryRateLimiter<br/><i>Sliding Window: 5 req/min</i>]
         HealthEndpoint["/api/health & /api/health/ready<br/><i>Zero-outbound readiness audit</i>"]
         JobRunner[JobRunner & Watchdog<br/><i>ThreadPoolExecutor + Wall Clock Timeout</i>]
+        HasRepo{GitHub repository supplied?}
+        RepoScan[Public repository scan<br/><i>Commit-pinned inventory and findings</i>]
         EventBus[JobEventBus<br/><i>PubSub per Job ID</i>]
     end
 
@@ -34,23 +36,22 @@ flowchart TD
 
     subgraph Graph ["LangGraph Multi-Tier Reasoning Pipeline"]
         Collect[1. collect_requirements]
-        RepoAn[2. analyze_repository<br/><i>Optional GitHub MCP</i>]
-        ValReq[3. validate_requirements]
-        ReasonSys[4. reason_system_design<br/><i>Deterministic Bridges</i>]
-        ResCompute[5. research_instances<br/><i>Live Vantage API</i>]
-        ResDB[6. research_database<br/><i>RDS Catalog</i>]
-        ResCache[7. research_cache<br/><i>ElastiCache Catalog</i>]
-        Holistic[8. holistic_recommend<br/><i>Structured Synthesis</i>]
-        GroundCheck[9. grounding_check<br/><i>Anti-Hallucination Audit</i>]
+        ValReq[2. validate_requirements]
+        ReasonSys[3. reason_system_design<br/><i>Deterministic Bridges</i>]
+        ResCompute[4. research_instances<br/><i>Live Vantage API</i>]
+        ResDB[5. research_database<br/><i>RDS Catalog</i>]
+        ResCache[6. research_cache<br/><i>ElastiCache Catalog</i>]
+        Holistic[7. holistic_recommend<br/><i>Structured Synthesis</i>]
+        GroundCheck[8. grounding_check<br/><i>Anti-Hallucination Audit</i>]
         ConsensusRouter{Consensus requested?}
-        ConsensusCheck[10. consensus_check<br/><i>2nd Model Cross-Validation</i>]
-        GenTF[11. generate_terraform<br/><i>Deterministic HCL Builder</i>]
+        ConsensusCheck[9. consensus_check<br/><i>2nd Model Cross-Validation</i>]
+        GenTF[10. generate_terraform<br/><i>Deterministic HCL Builder</i>]
     end
 
     subgraph Ext ["External Integrations (Graceful-Optional)"]
         VantageAPI[(Vantage EC2 API)]
         TavilySearch[(Tavily Web Search)]
-        GitHubMCP[(GitHub MCP Copilot)]
+        GitHub[(GitHub REST and archives)]
         Sentry[(Sentry DSN)]
     end
 
@@ -64,10 +65,12 @@ flowchart TD
     StoreBackend -->|Yes| RedisStore
     StoreBackend -->|No / Offline| MemoryStore
 
-    JobRunner -->|Spawn background thread| Collect
-    Collect --> RepoAn
-    RepoAn -.->|Optional token| GitHubMCP
-    RepoAn --> ValReq
+    JobRunner -->|Spawn background thread| HasRepo
+    HasRepo -->|Yes| RepoScan
+    HasRepo -->|No| Collect
+    RepoScan -.->|Read pinned commit| GitHub
+    RepoScan -->|Sanitized facts or fallback| Collect
+    Collect --> ValReq
 
     ValReq -->|Missing fields| Client
     ValReq -->|Complete| ReasonSys
@@ -135,5 +138,8 @@ flowchart TD
 
 ## 5. Verification Status & Known Limitations
 
-* **SSE / Browser Verification:** The SSE/browser path has been verified by code inspection and by real backend behavior (confirmed live via a raw SSE client), but has not yet been visually confirmed in an actual browser due to this development sandbox's inability to run `next dev`.
+* **Repository-backed HTTP jobs:** A validated repository reference is checked before the graph makes model calls. The scanner inventories one public commit, verifies file content against its Git blob, and keeps raw source out of graph state. Clarifications reuse the same findings. The report distinguishes expected exclusions from incomplete coverage and records advisory-check status separately.
+* **Job and share access:** The original job ID is an access capability. Repository-backed runs are excluded from public history. A separate public share ID resolves to an allowlisted AWS summary, without the original job ID, repository findings, prompts, or follow-up history.
+
+* **SSE / Browser Verification:** The raw SSE path was verified against the backend. Playwright now exercises live job updates and the polling fallback in Chromium against a local production frontend build and a fixture-backed API. Verification against deployed infrastructure is a separate release check.
 

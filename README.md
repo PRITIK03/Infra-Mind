@@ -87,7 +87,10 @@ Open `.env` and set:
 | `REDIS_URL` | No | Optional Redis URL enabling a persistent job store (survives restarts, shared across backend instances). Without it, jobs are in-memory only — fine for single-instance dev/demo. Records expire after 24h. |
 | `SENTRY_DSN` | No | Optional Sentry Data Source Name for error monitoring (e.g. `https://<key>@o0.ingest.sentry.io/0`). The app runs identically without it; Sentry's free tier covers this project's scale. |
 | `SENTRY_TRACES_SAMPLE_RATE` | No | Fraction of requests traced for performance monitoring (default `0.0` = error monitoring only). Keep `0.0` to protect free-tier quota. |
-| `GITHUB_MCP_TOKEN` | No | Optional GitHub PAT (repo read scope) enabling repository analysis. Absent → repo analysis is skipped and the agent runs unchanged. |
+| `REPOSITORY_ANALYSIS_ENABLED` | No | Public GitHub analysis for HTTP jobs (default `true`). Set `false` to pause GitHub access while keeping workload-only analysis available. |
+| `REPOSITORY_GITHUB_TOKEN` | No | Server-only GitHub credential with public read access for hosted traffic. Unset uses GitHub's anonymous public quota. |
+| `REPOSITORY_OSV_SCANNER` | No | Absolute path to an installed OSV-Scanner v2 binary for optional offline dependency checks. Set `OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY` to the absolute path of the offline database cache. |
+| `GITHUB_MCP_TOKEN` | No | Optional credential for the legacy terminal analyzer. HTTP jobs use the public GitHub REST integration. |
 | `LOG_FORMAT` | No | Backend log output: `json` (default, one JSON object per line for aggregators) or `text` (human-readable for local dev). |
 | `JOB_THREAD_POOL_SIZE` | No | Max simultaneous agent-run threads (default `8`, sized for small cloud hosts). |
 | `JOB_TIMEOUT_SECONDS` | No | Hard wall-clock limit for one complete agent run in seconds (default `600`). |
@@ -161,6 +164,20 @@ npm test            # runs Vitest
 
 ---
 
+## Analyze a GitHub repository
+
+Enter a public `https://github.com/owner/repo` in **GitHub repository**, paste it into **Workload details**, or use both fields. The backend resolves the default branch to a commit and reads its files before sizing AWS resources. A repository-only run can generate a provisional plan when the source identifies a workload. Expected traffic, availability targets, budget, and production database preferences can make the sizing more specific.
+
+The report includes the analyzed commit, file coverage, detected stack and data stores, deployment and workflow evidence, potential credential exposure, and local versus hosted inference signals. Findings link to the corresponding GitHub files. Binaries, submodules, generated/vendor files, large files, and unreadable content are accounted for separately. The scan covers the pinned snapshot, with limits of 1 MiB per eligible file, 1,500 files, 8 MiB of selected source, and a 35-second scan budget. It does not execute repository code. Secret findings are pattern-based and values are never included.
+
+If GitHub access fails, InfraMind explains the failure and identifies any recommendation that uses only workload details. GitHub can return the same response for a private or missing repository. Repository-backed jobs are kept off the public run history. Their share links use a separate ID and expose selected AWS resources and costs. The original report, Markdown, PDF, and Terraform remain available from the analysis itself.
+
+**Optional dependency advisories.** Install a pinned [OSV-Scanner v2 release](https://github.com/google/osv-scanner/releases) and provision the npm and PyPI databases using the [offline mode instructions](https://google.github.io/osv-scanner/usage/offline-mode/). Give the backend read access to the executable and database cache. Set both paths in the backend environment and refresh the cache separately from user requests. The report tells users whether checks ran, including when there is no supported lockfile or the scanner is unavailable.
+
+**Rollout.** For an existing production service, start with `REPOSITORY_ANALYSIS_ENABLED=false`, enable it in staging, and exercise a public repo-only run, a mixed run, an inaccessible repository, and a share link. Verify `/api/health/ready`, GitHub quota, SSE and polling, and worker capacity before enabling production traffic. The scan limit and cooldown are per backend process. For a multi-replica deployment, apply a shared quota at the gateway and keep clarification requests routed to the worker that owns the run.
+
+---
+
 ## Optional integrations & operational notes
 
 > Every item below is optional. Left unset, the app starts and runs exactly as in the minimal install above — mirroring the same graceful-skip pattern used for `TAVILY_API_KEY` and `DATABASE_URL`.
@@ -171,9 +188,9 @@ npm test            # runs Vitest
 
 **Sentry (`SENTRY_DSN`)** — Optional error monitoring via `sentry-sdk`. When set, **unhandled** route exceptions that produce HTTP 5xx are captured automatically by the FastAPI integration — no per-route wiring, and `HTTPException` responses (e.g. the 404/429 above) are intentionally **not** reported. The wall-clock job-timeout path and graph exceptions are caught deliberately by `app/api/main.py` and never reach FastAPI, so those two are reported explicitly (`capture_exception` / `capture_message`); all of it is a silent no-op when `SENTRY_DSN` is unset. Sentry's free tier covers this project's scale. `SENTRY_TRACES_SAMPLE_RATE` defaults to `0.0` (error monitoring only — tracing burns free-tier quota fast).
 
-**GitHub MCP (`GITHUB_MCP_TOKEN`)** — Optional. A GitHub PAT with `repo` scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
+**GitHub MCP (`GITHUB_MCP_TOKEN`)** — Optional for the terminal workflow. The web app and HTTP API use the public repository scan described above.
 
-**Real-time progress streaming (`GET /api/recommend/{job_id}/stream`)** — Server-Sent Events endpoint that pushes the job's state as it changes, so the UI doesn't have to poll. On connect it immediately sends the job's *current* state (correct for a client that attaches mid-run, or after the job already finished), then one event per state transition, and closes the stream server-side once the job reaches `done` or `error`. Each event's payload is byte-for-byte the document `GET /api/recommend/{job_id}` returns, so streaming and polling clients share one rendering path — and polling remains supported unchanged as the fallback. Events are published from the store's existing state-transition points (`update_stage` / `update_status` / `update_retry_info`), including the wall-clock timeout watchdog, so there is no parallel progress mechanism to keep in sync. Transport is chosen with the same graceful-optional pattern as the job store: in-process asyncio fan-out by default, Redis Pub/Sub when `REDIS_URL` is set (required for correct fan-out across multiple backend replicas). Client disconnects (tab closed / navigated away) are detected and the server-side generator stops; the requests-per-minute limiter is deliberately not applied here — a long-lived connection is capped by `MAX_CONCURRENT_STREAMS_PER_IP` open streams instead. `GET /api/share/{job_id}` is a thin read-only alias that returns the same document but 404s unless the job's status is `done`, for share links that should only ever resolve to a finished result. The frontend (`aws-advisor-ui`) prefers `EventSource` against `/stream` and falls back to polling silently whenever the stream can't be established or breaks mid-run (proxies that buffer SSE are a real failure mode), so the poller remains the safety net; completed results gain a "copy share link" action alongside the existing report/PDF buttons and a read-only `/share/{job_id}` route that renders the same result components with no follow-up input and no reset controls.
+**Real-time progress streaming (`GET /api/recommend/{job_id}/stream`)** — The API sends the current job snapshot on connect, then pushes progress, scan status, and terminal results as they change. SSE and polling use the same response shape. Streams close on completion, error, or disconnect, and the frontend falls back to polling if the stream fails. Redis Pub/Sub distributes updates across backend replicas when `REDIS_URL` is configured. `MAX_CONCURRENT_STREAMS_PER_IP` caps open streams per client.
 
 **Conversational follow-up (`POST /api/recommend/{job_id}/followup`)** — Once a recommendation job reaches `done`, users can ask natural-language follow-up questions against the completed architecture. The endpoint answers directly from the computed recommendation context and persists Q&A history on the job record (supported across both in-memory and Redis backends). It performs a focused single LLM call and never re-runs requirement gathering, research, or Terraform generation. Questions requiring fresh workload profiling or live AWS data are declined honestly.
 
@@ -275,14 +292,15 @@ Backend details: see [aws-instance-advisor/README.md](aws-instance-advisor/READM
 |--------|----------|-------------|
 | `GET` | `/api/health` | Liveness probe |
 | `GET` | `/api/health/ready` | Readiness probe: required config present, Redis `PING` when `REDIS_URL` is configured, configured-integrations status; 503 only when required config is missing |
-| `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
+| `POST` | `/api/recommend` | Start a new job with `message`, `github_url`, or both. Optional `consensus` defaults to `false`. |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
 | `GET` | `/api/recommend/{job_id}/stream` | Live progress stream (SSE, `text/event-stream`) — current state on connect, one event per transition, closes on `done`/`error` |
 | `POST` | `/api/recommend/{job_id}/answer` | Reply to an agent clarifying question `{ "answer": "..." }` |
 | `POST` | `/api/recommend/{job_id}/followup` | Ask a follow-up question on a completed recommendation `{ "question": "..." }` |
 | `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) for landing page readouts |
 | `GET` | `/api/runs` | Paginated run-history list; query params `?page=1&page_size=20` |
-| `GET` | `/api/share/{job_id}` | Read-only share alias of `/api/recommend/{job_id}`; 404 unless status is `done` |
+| `POST` | `/api/recommend/{job_id}/share` | Create the completed job's share link and return `{ "share_id": "..." }`. |
+| `GET` | `/api/share/{share_id}` | Read a completed shared recommendation. Existing workload-only links continue to accept the job ID. |
 
 Job status values: `collecting` → `running` → `awaiting_input` → `done` / `error`
 

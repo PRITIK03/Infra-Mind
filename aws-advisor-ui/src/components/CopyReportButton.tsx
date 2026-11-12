@@ -1,29 +1,28 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { SystemDesignRecommendation, TechnicalNeeds, UserRequirements } from "@/lib/types";
-import { recommendationToMarkdown } from "@/lib/reportMarkdown";
+import { recommendationToMarkdown, type ReportData } from "@/lib/reportMarkdown";
 
-interface Props {
-  sdr: SystemDesignRecommendation;
-  technicalNeeds?: TechnicalNeeds;
-  userRequirements?: UserRequirements;
-}
-
-export function CopyReportButton({ sdr, technicalNeeds, userRequirements }: Props) {
+export function CopyReportButton({
+  sdr, technicalNeeds, userRequirements, repository, repositoryProgress,
+  repositoryAssumptions, repositoryDeploymentNotes,
+}: ReportData) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(
-        recommendationToMarkdown({ sdr, technicalNeeds, userRequirements }),
+        recommendationToMarkdown({
+          sdr, technicalNeeds, userRequirements, repository, repositoryProgress,
+          repositoryAssumptions, repositoryDeploymentNotes,
+        }),
       );
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
       setCopied(false);
     }
-  }, [sdr, technicalNeeds, userRequirements]);
+  }, [sdr, technicalNeeds, userRequirements, repository, repositoryProgress, repositoryAssumptions, repositoryDeploymentNotes]);
 
   useEffect(() => {
     const handleCommandCopy = () => void handleCopy();

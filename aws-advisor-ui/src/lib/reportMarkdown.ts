@@ -1,14 +1,20 @@
 import type {
   EstimatedCost,
+  RepositoryProgress,
+  RepositoryReport,
   SystemDesignRecommendation,
   TechnicalNeeds,
   UserRequirements,
 } from "./types";
 
-interface ReportData {
+export interface ReportData {
   sdr: SystemDesignRecommendation;
   technicalNeeds?: TechnicalNeeds;
   userRequirements?: UserRequirements;
+  repository?: RepositoryReport;
+  repositoryProgress?: RepositoryProgress;
+  repositoryAssumptions?: string[];
+  repositoryDeploymentNotes?: string[];
 }
 
 export function formatConcurrency(
@@ -87,7 +93,10 @@ function addCost(lines: string[], cost: EstimatedCost, sdr: SystemDesignRecommen
   lines.push("");
 }
 
-export function recommendationToMarkdown({ sdr, technicalNeeds, userRequirements }: ReportData): string {
+export function recommendationToMarkdown({
+  sdr, technicalNeeds, userRequirements, repository, repositoryProgress,
+  repositoryAssumptions, repositoryDeploymentNotes,
+}: ReportData): string {
   const lines = ["# AWS Instance Recommendation", ""];
   lines.push("## Architecture Summary", "", sdr.architecture_summary, "");
 
@@ -140,6 +149,38 @@ export function recommendationToMarkdown({ sdr, technicalNeeds, userRequirements
   lines.push("");
 
   if (sdr.estimated_cost) addCost(lines, sdr.estimated_cost, sdr);
+
+  if (repository) {
+    lines.push("## Repository Analysis", "");
+    const { owner, name } = repository.repository;
+    const url = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const sha = encodeURIComponent(repository.commit_sha);
+    lines.push(`- Repository: [${owner}/${name}](${url}/commit/${sha})`);
+    lines.push(`- Coverage: ${repository.coverage}, ${repository.files_analyzed} of ${repository.files_discovered} tracked files read`);
+    addField(lines, "Stack", repository.stack.join(", "));
+    addField(lines, "Data stores", repository.databases.join(", "));
+    addField(lines, "Workflows", repository.workflows.join(", "));
+    for (const [reason, count] of Object.entries(repository.skipped)) {
+      if (count > 0) lines.push(`- Skipped ${count} (${reason.replaceAll("_", " ")})`);
+    }
+    for (const limitation of repository.limitations) lines.push(`- ${limitation}`);
+    lines.push(`- Dependency advisory check: ${repository.advisory_status.replaceAll("_", " ")}`, "");
+    for (const note of [...(repositoryAssumptions ?? []), ...(repositoryDeploymentNotes ?? [])]) {
+      lines.push(`- ${note}`);
+    }
+    if (repository.findings.length) {
+      lines.push("", "### Findings", "");
+      for (const finding of repository.findings) {
+        const path = finding.path?.split("/").map(encodeURIComponent).join("/");
+        const location = finding.line ? `#L${finding.line}` : "";
+        const evidence = path ? ` [Evidence](${url}/blob/${sha}/${path}${location})` : "";
+        lines.push(`- **${finding.title}.** ${finding.action}${evidence}`);
+      }
+    }
+    lines.push("");
+  } else if (repositoryProgress?.status === "unavailable") {
+    lines.push("## Repository Analysis", "", "The repository could not be analyzed. This recommendation is based on workload details only.", "");
+  }
 
   return lines.join("\n").trim() + "\n";
 }

@@ -12,6 +12,48 @@ export type JobStatus =
 export interface RecommendRequest {
   message: string;
   consensus?: boolean;
+  github_url?: string;
+}
+
+export type RepositoryFailureReason =
+  | "disabled" | "not_accessible" | "not_public" | "empty" | "rate_limited"
+  | "unavailable" | "busy" | "timeout" | "no_source";
+
+export interface RepositoryProgress {
+  status: "checking" | "scanning" | "complete" | "partial" | "unavailable";
+  reason?: RepositoryFailureReason;
+  retry_after_seconds?: number;
+}
+
+export interface RepositoryFinding {
+  category: "application" | "database" | "workflow" | "deployment" | "security" | "inference";
+  title: string;
+  action: string;
+  path: string | null;
+  line: number | null;
+  severity: "info" | "review" | "high";
+  confidence: "observed" | "inferred";
+}
+
+export interface RepositoryReport {
+  repository: { owner: string; name: string };
+  commit_sha: string;
+  coverage: "complete" | "partial";
+  files_discovered: number;
+  files_analyzed: number;
+  skipped: Record<string, number>;
+  limitations: string[];
+  stack: string[];
+  databases: string[];
+  configured_databases?: string[];
+  workflows: string[];
+  workload_type: UserRequirements["workload_type"];
+  has_dockerfile: boolean;
+  local_inference: boolean;
+  hosted_inference: boolean;
+  model_artifacts: number;
+  advisory_status: "not_configured" | "no_supported_dependencies" | "checked" | "checked_capped" | "partial" | "unavailable";
+  findings: RepositoryFinding[];
 }
 
 export type CacheEngine = "Memcached" | "Redis" | "Valkey";
@@ -145,6 +187,9 @@ export interface UserRequirements {
 }
 
 export interface JobResult {
+  repository_report?: RepositoryReport;
+  repository_assumptions?: string[];
+  repository_deployment_notes?: string[];
   system_design_recommendation?: SystemDesignRecommendation;
   /** Legacy V1 fallback — rendered if system_design_recommendation is absent */
   recommendation?: InstanceRecommendation;
@@ -199,6 +244,7 @@ export interface JobResponse {
   status: JobStatus;
   current_stage: string;
   created_at: number;
+  repository?: RepositoryProgress;
   // awaiting_input only:
   next_question?: string;
   // done only:

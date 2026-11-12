@@ -81,13 +81,16 @@ Open `.env` and set:
 | `RATE_LIMIT_WINDOW_SECONDS` | No | Recommendation rate-limit window (default `60`) |
 | `MAX_CONCURRENT_STREAMS_PER_IP` | No | Cap on concurrently open SSE progress streams per client IP (default `5`); replaces the requests-per-minute limiter for `/stream` |
 | `SSE_HEARTBEAT_SECONDS` | No | Idle interval after which an open SSE stream sends a keep-alive comment and re-checks the client connection (default `15`) |
-| `GITHUB_MCP_TOKEN` | No | Optional GitHub PAT (repo read scope) for repository analysis. Without it, the agent runs unchanged and repo analysis is skipped. |
+| `REPOSITORY_ANALYSIS_ENABLED` | No | Enable public GitHub repository analysis for HTTP jobs (default `true`). |
+| `REPOSITORY_GITHUB_TOKEN` | No | Server-only credential limited to public GitHub reads. Without it, GitHub's anonymous quota applies. |
+| `REPOSITORY_OSV_SCANNER` | No | Absolute path to an optional offline OSV-Scanner v2 executable. Also set `OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY`. |
+| `GITHUB_MCP_TOKEN` | No | Optional token for the legacy terminal analyzer. |
 | `LOG_FORMAT` | No | Backend log output: `json` (default, one JSON object per line) or `text` (human-readable local dev). |
 | `JOB_THREAD_POOL_SIZE` | No | Max simultaneous agent-run threads (default `8`). |
 | `JOB_TIMEOUT_SECONDS` | No | Hard wall-clock limit per complete agent run, seconds (default `600`). |
 | `MAX_SHUTDOWN_GRACE_SECONDS` | No | Shutdown grace period for in-flight jobs, seconds (default `10`). |
 
-> **GitHub MCP** (`GITHUB_MCP_TOKEN`) — Optional. A GitHub PAT with `repo` read scope enables per-repository analysis when a repo URL is supplied; the recommendation then carries the result. Absent the token, the `analyze_repository` node is skipped and the agent runs fully unchanged, surfacing an honest note that no repo context was available (see `app/tools/github_mcp.py`).
+> **GitHub repository analysis** — The HTTP API accepts a public GitHub URL in `github_url` or in the workload text. It resolves the default branch to an exact commit and scans eligible source before calling the model. The job exposes a typed access or scan status over polling and SSE. See the [repository analysis and rollout guide](../README.md#analyze-a-github-repository).
 
 ### 3. Start the backend API
 
@@ -220,12 +223,13 @@ Frontend: `../aws-advisor-ui/` (see root README).
 |--------|----------|-------------|
 | `GET` | `/api/health` | Liveness probe |
 | `GET` | `/api/health/ready` | Readiness probe: local-only checks (required config, Redis PING when configured, integrations status); 503 only when required config is missing |
-| `POST` | `/api/recommend` | Start a new job `{ "message": "..." }` |
+| `POST` | `/api/recommend` | Start a job with `message`, `github_url`, or both. Optional `consensus` defaults to `false`. |
 | `GET` | `/api/recommend/{job_id}` | Poll job status / result |
 | `GET` | `/api/recommend/{job_id}/stream` | Live progress stream (SSE). Sends current state on connect, one event per transition, closes on `done`/`error` |
-| `GET` | `/api/share/{job_id}` | Read-only share alias; 404 unless status is `done` |
+| `GET` | `/api/share/{share_id}` | Read a completed shared report. Legacy workload-only shares also accept the job ID. |
 | `POST` | `/api/recommend/{job_id}/answer` | Reply to an agent clarifying question `{ "answer": "..." }` |
 | `POST` | `/api/recommend/{job_id}/followup` | Ask a follow-up question on a completed recommendation `{ "question": "..." }` |
+| `POST` | `/api/recommend/{job_id}/share` | Create a completed-job share link. Repository-backed reports receive a separate share ID and a limited public result. |
 | `GET` | `/api/stats` | Live instance-type counts (EC2 / RDS / cache) |
 | `GET` | `/api/runs` | Paginated run history (`?page=1&page_size=20`) |
 

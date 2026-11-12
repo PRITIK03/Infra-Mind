@@ -7,10 +7,14 @@ interface Props {
   currentStage: string;
   status: JobStatus;
   retryInfo: string | null;
+  hasRepository?: boolean;
 }
 
-export function StageProgress({ currentStage, status, retryInfo }: Props) {
-  const currentIdx = ORDERED_STAGES.findIndex((s) => s === currentStage);
+export function StageProgress({ currentStage, status, retryInfo, hasRepository = false }: Props) {
+  const stages = hasRepository
+    ? [ORDERED_STAGES[0], "Checking GitHub", "Analyzing repository", ...ORDERED_STAGES.slice(1)]
+    : ORDERED_STAGES;
+  const currentIdx = stages.findIndex((s) => s === (currentStage === "Preparing recommendation" ? "Collecting requirements" : currentStage));
   // If we don't find an exact match, treat as "in progress somewhere"
   const effectiveIdx = currentIdx === -1 ? 0 : currentIdx;
 
@@ -42,7 +46,7 @@ export function StageProgress({ currentStage, status, retryInfo }: Props) {
       </div>
 
       <ol className="space-y-0">
-        {ORDERED_STAGES.map((stage, idx) => {
+        {stages.map((stage, idx) => {
           const isDone = idx < effectiveIdx;
           const isCurrent =
             idx === effectiveIdx &&

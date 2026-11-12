@@ -195,7 +195,64 @@ def seed_jobs() -> list[str]:
     return list(fixtures)
 
 
+def install_analysis_fixtures() -> None:
+    """Replace external providers while exercising the real job/API flow."""
+    import asyncio
+
+    from app.agent import graph
+    from app.analysis import repository
+    from app.models.schemas import SystemDesignRecommendation, UserRequirements
+    from app.tools.github_repository import Commit, RepositorySnapshot, RepositoryUnavailable
+
+    class FixtureGitHub:
+        def __init__(self, _client, _token):
+            pass
+
+        async def resolve(self, ref):
+            if ref.owner != "inframind-demo" or ref.name not in ("public-service", "partial-service"):
+                raise RepositoryUnavailable("not_accessible")
+            return Commit(ref, "a" * 40, "b" * 40)
+
+        async def snapshot(self, commit):
+            # Give the browser a chance to observe the real scanning stage.
+            await asyncio.sleep(0.2)
+            files = {
+                "services/api/main.py": "from fastapi import FastAPI\napp = FastAPI()\n",
+                "services/api/db/migrations/001.sql": "CREATE EXTENSION IF NOT EXISTS pgcrypto;",
+                "services/api/Dockerfile": "FROM python:3.11\n",
+            }
+            snapshot = RepositorySnapshot(commit, len(files), files=files)
+            if commit.repository.name == "partial-service":
+                snapshot.files_discovered += 1
+                snapshot.skipped["unreadable"] += 1
+            return snapshot
+
+    def collect(state):
+        if state.get("latest_user_message"):
+            state["requirements"] = UserRequirements(
+                workload_type="api_service", requests_per_second=25, traffic_pattern="steady",
+            )
+            state["latest_user_message"] = None
+        return state
+
+    def recommend(state):
+        state["system_design_recommendation"] = SystemDesignRecommendation.model_validate(_base_sdr())
+        state["terraform_files"] = _full_stack_result()["terraform_files"]
+        return state
+
+    os.environ["REPOSITORY_ANALYSIS_ENABLED"] = "true"
+    os.environ.pop("REPOSITORY_GITHUB_TOKEN", None)
+    os.environ.pop("REPOSITORY_OSV_SCANNER", None)
+    repository.GitHubRepository = FixtureGitHub
+    graph.collect_requirements = collect
+    graph.holistic_recommend = recommend
+    for name in ("reason_system_design", "research_instances", "research_database", "research_cache",
+                 "grounding_check", "consensus_check", "generate_terraform"):
+        setattr(graph, name, lambda state: state)
+
+
 if __name__ == "__main__":
+    install_analysis_fixtures()
     seeded = seed_jobs()
     for job_id in seeded:
         print(f"Seeded job {job_id} -> /api/share/{job_id}")

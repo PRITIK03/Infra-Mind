@@ -13,9 +13,10 @@ interface Props {
   sdr: SystemDesignRecommendation;
   technicalNeeds?: TechnicalNeeds | null;
   hasTerraform?: boolean;
+  hasRepository?: boolean;
 }
 
-export function SectionNav({ sdr, technicalNeeds, hasTerraform = false }: Props) {
+export function SectionNav({ sdr, technicalNeeds, hasTerraform = false, hasRepository = false }: Props) {
   const [sections, setSections] = useState<Section[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -26,11 +27,12 @@ export function SectionNav({ sdr, technicalNeeds, hasTerraform = false }: Props)
       { id: "database", label: "Database", visible: true },
       { id: "cache", label: "Cache", visible: true },
       { id: "load-balancer", label: "Load Balancer", visible: true },
+      { id: "repository", label: "Repository analysis", visible: hasRepository },
       { id: "consensus", label: "Consensus", visible: !!sdr.consensus_result?.enabled },
       { id: "terraform", label: "Terraform", visible: hasTerraform },
     ];
     setSections(all.filter((s) => s.visible));
-  }, [hasTerraform, sdr]);
+  }, [hasRepository, hasTerraform, sdr]);
 
   useEffect(() => {
     if (!technicalNeeds) return;
